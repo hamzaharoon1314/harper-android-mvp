@@ -26,7 +26,7 @@ jobs:
         with:
           api-level: 34
           target: aosp_atd
-          arch: x86_64
+          arch: aarch64
           working-directory: android
           script: ./gradlew connectedDebugAndroidTest
       - name: Upload Test Results
