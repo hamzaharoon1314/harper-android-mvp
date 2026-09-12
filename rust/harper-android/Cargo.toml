@@ -1,0 +1,18 @@
+[package]
+name = "harper-android"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "harper_android"
+
+[dependencies]
+harper-core = "2.10.0"
+thiserror = "2.0.20"
+uniffi = { version = "0.28.2", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"

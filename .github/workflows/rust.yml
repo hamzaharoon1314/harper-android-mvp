@@ -1,0 +1,33 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  rust-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cargo Format
+        working-directory: rust/harper-android
+        run: cargo fmt --check
+      - name: Cargo Clippy
+        working-directory: rust/harper-android
+        run: cargo clippy -- -D warnings
+      - name: Cargo Test
+        working-directory: rust/harper-android
+        run: cargo test

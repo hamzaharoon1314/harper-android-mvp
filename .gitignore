@@ -1,0 +1,91 @@
+# Harper Android .gitignore
+
+# ----------------------------------------------------------------------
+# Android / Gradle
+# ----------------------------------------------------------------------
+.gradle/
+android/.gradle/
+build/
+android/build/
+android/app/build/
+android/app/.cxx/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+bin/
+gen/
+out/
+gradle-app.setting
+
+# ----------------------------------------------------------------------
+# Local Configuration & SDK Paths
+# ----------------------------------------------------------------------
+local.properties
+android/local.properties
+
+# ----------------------------------------------------------------------
+# Rust
+# ----------------------------------------------------------------------
+target/
+rust/target/
+rust/**/target/
+**/*.rs.bk
+
+# ----------------------------------------------------------------------
+# IDE Metadata
+# ----------------------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+*.sublime-workspace
+*.sublime-project
+.project
+.classpath
+.settings/
+
+# ----------------------------------------------------------------------
+# Security / Secrets (NEVER COMMIT)
+# ----------------------------------------------------------------------
+*.jks
+*.keystore
+.env
+.env.*
+credentials
+credentials.*
+tokens
+tokens.*
+private_keys
+*private*.pem
+*private*.key
+client_secret.json
+google-services.json
+
+# ----------------------------------------------------------------------
+# Logs, Crashes, and Temporary Files
+# ----------------------------------------------------------------------
+*.log
+crash/
+crashes/
+hs_err_pid*.log
+*.swp
+*~
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# ----------------------------------------------------------------------
+# Testing
+# ----------------------------------------------------------------------
+test-results/
+test-reports/
+raw_text/
+raw_input/
+test-generated-text/
