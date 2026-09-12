@@ -1,10 +1,9 @@
-# Harper Android .gitignore
-
 # ----------------------------------------------------------------------
 # Android / Gradle
 # ----------------------------------------------------------------------
 .gradle/
 android/.gradle/
+gradle-8.9/
 build/
 android/build/
 android/app/build/
