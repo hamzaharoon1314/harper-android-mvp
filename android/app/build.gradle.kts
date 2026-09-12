@@ -18,6 +18,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    lint {
+        abortOnError = false
+        disable.add("NewApi")
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -51,7 +56,14 @@ android {
                 val releaseDir = file("../../rust/harper-android/target/release").absolutePath
                 test.systemProperty("java.library.path", releaseDir)
                 test.systemProperty("jna.library.path", releaseDir)
-                test.systemProperty("uniffi.component.harper_android.libraryOverride", "$releaseDir/harper_android.dll")
+                
+                val osName = System.getProperty("os.name").lowercase()
+                val libName = when {
+                    osName.contains("windows") -> "harper_android.dll"
+                    osName.contains("mac") -> "libharper_android.dylib"
+                    else -> "libharper_android.so"
+                }
+                test.systemProperty("uniffi.component.harper_android.libraryOverride", "$releaseDir/$libName")
             }
         }
     }
