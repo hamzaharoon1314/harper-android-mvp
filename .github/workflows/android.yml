@@ -31,6 +31,9 @@ jobs:
       - name: Run Lint
         working-directory: android
         run: ./gradlew lint
+      - name: Build Host Rust Library
+        working-directory: rust/harper-android
+        run: cargo build --release
       - name: Run Unit Tests
         working-directory: android
         run: ./gradlew testDebugUnitTest
