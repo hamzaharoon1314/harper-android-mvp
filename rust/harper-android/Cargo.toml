@@ -16,3 +16,7 @@ uniffi = { version = "0.28.2", features = ["cli"] }
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
+
+[profile.release]
+lto = false
+codegen-units = 16
