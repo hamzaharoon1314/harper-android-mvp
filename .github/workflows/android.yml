@@ -19,6 +19,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, x86_64-linux-android
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/harper-android
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
       - name: Cache Gradle
