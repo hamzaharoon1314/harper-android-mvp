@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest # Apple Silicon
+    runs-on: ubuntu-latest # Uses KVM hardware acceleration
     steps:
       - uses: actions/checkout@v4
       - name: Setup JDK 17
@@ -28,9 +28,9 @@ jobs:
       - name: Run Instrumentation Tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 33
-          target: google_apis
-          arch: arm64-v8a
+          api-level: 30
+          target: default
+          arch: x86_64
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
