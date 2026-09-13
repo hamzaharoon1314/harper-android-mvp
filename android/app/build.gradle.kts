@@ -102,7 +102,21 @@ dependencies {
 tasks.register<Exec>("buildRust") {
     val cargoNdk = if (System.getProperty("os.name").lowercase().contains("windows")) "cargo-ndk.exe" else "cargo-ndk"
     workingDir = file("../../rust/harper-android")
-    commandLine("cargo", "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-o", "${project.projectDir}/src/main/jniLibs", "build", "--release")
+    
+    val activeArchs = if (project.hasProperty("ciArch")) {
+        listOf(project.property("ciArch").toString())
+    } else {
+        listOf("arm64-v8a", "x86_64")
+    }
+    
+    val args = mutableListOf("ndk")
+    activeArchs.forEach {
+        args.add("-t")
+        args.add(it)
+    }
+    args.addAll(listOf("-o", "${project.projectDir}/src/main/jniLibs", "build", "--release"))
+    
+    commandLine("cargo", *args.toTypedArray())
     
     // cargo-ndk is installed, so we want this to fail if rust build fails
     isIgnoreExitValue = false

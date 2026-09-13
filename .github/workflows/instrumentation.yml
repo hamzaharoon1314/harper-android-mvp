@@ -35,7 +35,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           working-directory: android
-          script: ./gradlew connectedDebugAndroidTest
+          script: ./gradlew connectedDebugAndroidTest -PciArch=x86_64
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
