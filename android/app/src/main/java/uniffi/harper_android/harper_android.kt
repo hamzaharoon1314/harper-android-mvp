@@ -724,6 +724,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -751,10 +755,14 @@ internal interface UniffiLib : Library {
     ): Pointer
     fun uniffi_harper_android_fn_method_harperengine_capabilities(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_harper_android_fn_method_harperengine_get_config_version(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
     fun uniffi_harper_android_fn_method_harperengine_lint(`ptr`: Pointer,`text`: RustBuffer.ByValue,`language`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_harper_android_fn_method_harperengine_schema_version(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_harper_android_fn_method_harperengine_update_config(`ptr`: Pointer,`config`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     fun uniffi_harper_android_fn_method_harperengine_version(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun ffi_harper_android_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -871,9 +879,13 @@ internal interface UniffiLib : Library {
     ): Unit
     fun uniffi_harper_android_checksum_method_harperengine_capabilities(
     ): Short
+    fun uniffi_harper_android_checksum_method_harperengine_get_config_version(
+    ): Short
     fun uniffi_harper_android_checksum_method_harperengine_lint(
     ): Short
     fun uniffi_harper_android_checksum_method_harperengine_schema_version(
+    ): Short
+    fun uniffi_harper_android_checksum_method_harperengine_update_config(
     ): Short
     fun uniffi_harper_android_checksum_method_harperengine_version(
     ): Short
@@ -899,10 +911,16 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_harper_android_checksum_method_harperengine_capabilities() != 16025.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_harper_android_checksum_method_harperengine_lint() != 17985.toShort()) {
+    if (lib.uniffi_harper_android_checksum_method_harperengine_get_config_version() != 48308.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_harper_android_checksum_method_harperengine_lint() != 30559.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_harper_android_checksum_method_harperengine_schema_version() != 39472.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_harper_android_checksum_method_harperengine_update_config() != 47336.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_harper_android_checksum_method_harperengine_version() != 39236.toShort()) {
@@ -1204,9 +1222,13 @@ public interface HarperEngineInterface {
     
     fun `capabilities`(): List<kotlin.String>
     
-    fun `lint`(`text`: kotlin.String, `language`: kotlin.String): List<LintResult>
+    fun `getConfigVersion`(): kotlin.UInt
+    
+    fun `lint`(`text`: kotlin.String, `language`: kotlin.String): List<HarperLint>
     
     fun `schemaVersion`(): kotlin.String
+    
+    fun `updateConfig`(`config`: HarperConfig)
     
     fun `version`(): kotlin.String
     
@@ -1306,8 +1328,20 @@ open class HarperEngine: Disposable, AutoCloseable, HarperEngineInterface {
     }
     
 
-    override fun `lint`(`text`: kotlin.String, `language`: kotlin.String): List<LintResult> {
-            return FfiConverterSequenceTypeLintResult.lift(
+    override fun `getConfigVersion`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_harper_android_fn_method_harperengine_get_config_version(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `lint`(`text`: kotlin.String, `language`: kotlin.String): List<HarperLint> {
+            return FfiConverterSequenceTypeHarperLint.lift(
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_harper_android_fn_method_harperengine_lint(
@@ -1328,6 +1362,17 @@ open class HarperEngine: Disposable, AutoCloseable, HarperEngineInterface {
     }
     )
     }
+    
+
+    override fun `updateConfig`(`config`: HarperConfig)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_harper_android_fn_method_harperengine_update_config(
+        it, FfiConverterTypeHarperConfig.lower(`config`),_status)
+}
+    }
+    
     
 
     override fun `version`(): kotlin.String {
@@ -1391,11 +1436,9 @@ public object FfiConverterTypeHarperEngine: FfiConverter<HarperEngine, Pointer> 
 
 
 
-data class LintResult (
-    var `startUtf16`: kotlin.UInt, 
-    var `endUtf16`: kotlin.UInt, 
-    var `message`: kotlin.String, 
-    var `suggestions`: List<kotlin.String>
+data class AnalysisMetadata (
+    var `version`: kotlin.String, 
+    var `executionTimeMs`: kotlin.UInt
 ) {
     
     companion object
@@ -1404,30 +1447,228 @@ data class LintResult (
 /**
  * @suppress
  */
-public object FfiConverterTypeLintResult: FfiConverterRustBuffer<LintResult> {
-    override fun read(buf: ByteBuffer): LintResult {
-        return LintResult(
+public object FfiConverterTypeAnalysisMetadata: FfiConverterRustBuffer<AnalysisMetadata> {
+    override fun read(buf: ByteBuffer): AnalysisMetadata {
+        return AnalysisMetadata(
+            FfiConverterString.read(buf),
             FfiConverterUInt.read(buf),
-            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AnalysisMetadata) = (
+            FfiConverterString.allocationSize(value.`version`) +
+            FfiConverterUInt.allocationSize(value.`executionTimeMs`)
+    )
+
+    override fun write(value: AnalysisMetadata, buf: ByteBuffer) {
+            FfiConverterString.write(value.`version`, buf)
+            FfiConverterUInt.write(value.`executionTimeMs`, buf)
+    }
+}
+
+
+
+data class HarperConfig (
+    var `dialect`: HarperDialect, 
+    var `documentMode`: kotlin.String, 
+    var `disabledRules`: List<kotlin.String>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHarperConfig: FfiConverterRustBuffer<HarperConfig> {
+    override fun read(buf: ByteBuffer): HarperConfig {
+        return HarperConfig(
+            FfiConverterTypeHarperDialect.read(buf),
             FfiConverterString.read(buf),
             FfiConverterSequenceString.read(buf),
         )
     }
 
-    override fun allocationSize(value: LintResult) = (
+    override fun allocationSize(value: HarperConfig) = (
+            FfiConverterTypeHarperDialect.allocationSize(value.`dialect`) +
+            FfiConverterString.allocationSize(value.`documentMode`) +
+            FfiConverterSequenceString.allocationSize(value.`disabledRules`)
+    )
+
+    override fun write(value: HarperConfig, buf: ByteBuffer) {
+            FfiConverterTypeHarperDialect.write(value.`dialect`, buf)
+            FfiConverterString.write(value.`documentMode`, buf)
+            FfiConverterSequenceString.write(value.`disabledRules`, buf)
+    }
+}
+
+
+
+data class HarperLint (
+    var `issueId`: kotlin.String, 
+    var `startUtf16`: kotlin.UInt, 
+    var `endUtf16`: kotlin.UInt, 
+    var `message`: kotlin.String, 
+    var `ruleId`: kotlin.String?, 
+    var `suggestions`: List<HarperSuggestion>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHarperLint: FfiConverterRustBuffer<HarperLint> {
+    override fun read(buf: ByteBuffer): HarperLint {
+        return HarperLint(
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceTypeHarperSuggestion.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HarperLint) = (
+            FfiConverterString.allocationSize(value.`issueId`) +
             FfiConverterUInt.allocationSize(value.`startUtf16`) +
             FfiConverterUInt.allocationSize(value.`endUtf16`) +
             FfiConverterString.allocationSize(value.`message`) +
-            FfiConverterSequenceString.allocationSize(value.`suggestions`)
+            FfiConverterOptionalString.allocationSize(value.`ruleId`) +
+            FfiConverterSequenceTypeHarperSuggestion.allocationSize(value.`suggestions`)
     )
 
-    override fun write(value: LintResult, buf: ByteBuffer) {
+    override fun write(value: HarperLint, buf: ByteBuffer) {
+            FfiConverterString.write(value.`issueId`, buf)
             FfiConverterUInt.write(value.`startUtf16`, buf)
             FfiConverterUInt.write(value.`endUtf16`, buf)
             FfiConverterString.write(value.`message`, buf)
-            FfiConverterSequenceString.write(value.`suggestions`, buf)
+            FfiConverterOptionalString.write(value.`ruleId`, buf)
+            FfiConverterSequenceTypeHarperSuggestion.write(value.`suggestions`, buf)
     }
 }
+
+
+
+data class HarperSuggestion (
+    var `suggestionId`: kotlin.String, 
+    var `displayText`: kotlin.String, 
+    var `operation`: EditOperation
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHarperSuggestion: FfiConverterRustBuffer<HarperSuggestion> {
+    override fun read(buf: ByteBuffer): HarperSuggestion {
+        return HarperSuggestion(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeEditOperation.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HarperSuggestion) = (
+            FfiConverterString.allocationSize(value.`suggestionId`) +
+            FfiConverterString.allocationSize(value.`displayText`) +
+            FfiConverterTypeEditOperation.allocationSize(value.`operation`)
+    )
+
+    override fun write(value: HarperSuggestion, buf: ByteBuffer) {
+            FfiConverterString.write(value.`suggestionId`, buf)
+            FfiConverterString.write(value.`displayText`, buf)
+            FfiConverterTypeEditOperation.write(value.`operation`, buf)
+    }
+}
+
+
+
+sealed class EditOperation {
+    
+    data class ReplaceWith(
+        val `replacement`: kotlin.String) : EditOperation() {
+        companion object
+    }
+    
+    data class InsertAfter(
+        val `insertion`: kotlin.String) : EditOperation() {
+        companion object
+    }
+    
+    object Remove : EditOperation()
+    
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeEditOperation : FfiConverterRustBuffer<EditOperation>{
+    override fun read(buf: ByteBuffer): EditOperation {
+        return when(buf.getInt()) {
+            1 -> EditOperation.ReplaceWith(
+                FfiConverterString.read(buf),
+                )
+            2 -> EditOperation.InsertAfter(
+                FfiConverterString.read(buf),
+                )
+            3 -> EditOperation.Remove
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: EditOperation) = when(value) {
+        is EditOperation.ReplaceWith -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`replacement`)
+            )
+        }
+        is EditOperation.InsertAfter -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`insertion`)
+            )
+        }
+        is EditOperation.Remove -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: EditOperation, buf: ByteBuffer) {
+        when(value) {
+            is EditOperation.ReplaceWith -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`replacement`, buf)
+                Unit
+            }
+            is EditOperation.InsertAfter -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`insertion`, buf)
+                Unit
+            }
+            is EditOperation.Remove -> {
+                buf.putInt(3)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
 
 
 
@@ -1506,6 +1747,71 @@ public object FfiConverterTypeEngineError : FfiConverterRustBuffer<EngineExcepti
 
 
 
+enum class HarperDialect {
+    
+    AMERICAN,
+    CANADIAN,
+    AUSTRALIAN,
+    BRITISH,
+    INDIAN;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHarperDialect: FfiConverterRustBuffer<HarperDialect> {
+    override fun read(buf: ByteBuffer) = try {
+        HarperDialect.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: HarperDialect) = 4UL
+
+    override fun write(value: HarperDialect, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
+    override fun read(buf: ByteBuffer): kotlin.String? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterString.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.String?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
 /**
  * @suppress
  */
@@ -1537,24 +1843,52 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
 /**
  * @suppress
  */
-public object FfiConverterSequenceTypeLintResult: FfiConverterRustBuffer<List<LintResult>> {
-    override fun read(buf: ByteBuffer): List<LintResult> {
+public object FfiConverterSequenceTypeHarperLint: FfiConverterRustBuffer<List<HarperLint>> {
+    override fun read(buf: ByteBuffer): List<HarperLint> {
         val len = buf.getInt()
-        return List<LintResult>(len) {
-            FfiConverterTypeLintResult.read(buf)
+        return List<HarperLint>(len) {
+            FfiConverterTypeHarperLint.read(buf)
         }
     }
 
-    override fun allocationSize(value: List<LintResult>): ULong {
+    override fun allocationSize(value: List<HarperLint>): ULong {
         val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypeLintResult.allocationSize(it) }.sum()
+        val sizeForItems = value.map { FfiConverterTypeHarperLint.allocationSize(it) }.sum()
         return sizeForLength + sizeForItems
     }
 
-    override fun write(value: List<LintResult>, buf: ByteBuffer) {
+    override fun write(value: List<HarperLint>, buf: ByteBuffer) {
         buf.putInt(value.size)
         value.iterator().forEach {
-            FfiConverterTypeLintResult.write(it, buf)
+            FfiConverterTypeHarperLint.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeHarperSuggestion: FfiConverterRustBuffer<List<HarperSuggestion>> {
+    override fun read(buf: ByteBuffer): List<HarperSuggestion> {
+        val len = buf.getInt()
+        return List<HarperSuggestion>(len) {
+            FfiConverterTypeHarperSuggestion.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HarperSuggestion>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHarperSuggestion.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HarperSuggestion>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHarperSuggestion.write(it, buf)
         }
     }
 }

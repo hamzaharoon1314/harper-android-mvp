@@ -15,7 +15,7 @@ class HarperEngineTest {
         assertTrue("Expected at least one lint result", results.isNotEmpty())
         
         val firstResult = results.first()
-        assertTrue("Expected replacement to contain 'goes'", firstResult.suggestions.contains("goes"))
+        assertTrue("Expected replacement to contain 'goes'", firstResult.suggestions.any { it.displayText.contains("goes") })
         
         // "He go to school" -> "go" is at index 3..5
         assertEquals(3u, firstResult.startUtf16)

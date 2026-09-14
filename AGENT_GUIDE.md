@@ -1,2424 +1,1673 @@
-# Harper Android Grammar Assistant — Agentic Build Specification
+# Harper Android — Full harper-core Integration Agent Guide
 
-**Status:** Implementation-ready  
-**Date:** 2026-09-09  
-**Target Android:** API 36+  
-**Primary engine:** Harper `harper-core`  
-**Android:** Kotlin + Jetpack Compose  
-**Native:** Rust  
-**Rust/Kotlin bridge:** UniFFI  
-**System integration:** `AccessibilityService` + accessibility overlays  
-**Privacy model:** Local-first, no raw typed text sent to a cloud service by default
+## Purpose
 
-> This file is the source of truth for the coding agent. Follow the phases in order. Do not skip acceptance criteria. Do not introduce cloud processing, OCR, or an IME unless a future specification explicitly requires it.
+This document is the implementation contract and phased roadmap for turning the current Harper Android MVP into a production-quality Android host for the real `harper-core` engine.
 
----
+The goal is **not** to reimplement Harper on Android. The Android application should provide a strong, privacy-preserving host/integration layer while using the real Harper engine for language analysis.
 
-# 1. Mission
+The end state should support, as far as the selected compatible `harper-core` version allows:
 
-Build a Grammarly-like Android writing assistant using Harper's Rust grammar engine.
+- Real Harper curated grammar and spelling linting
+- Correct use of Harper dictionaries
+- Dialect selection
+- Configurable/ignored lints
+- User dictionary support
+- All supported suggestion/edit semantics, not only replacement strings
+- Stable Android-facing result models
+- Multiple simultaneous lints
+- A UI that lets the user inspect and select among suggestions
+- Robust accessibility-service event filtering
+- Correct UTF-16 offsets and Unicode behavior
+- Correct handling of IME composition and rapidly changing text
+- Background/native analysis without blocking the Android main thread
+- Cancellation/stale-result protection
+- Persistent/reusable Rust engine state
+- A clean compatibility boundary between Android and `harper-core`
+- Privacy/security protections for password and sensitive fields
+- Compatibility policies for apps/editors where Android accessibility behavior is unreliable
+- Strong automated tests, benchmarks, and release gates
 
-The app must:
+## Non-Negotiable Operating Rules for the Agent
 
-1. Detect a focused editable text field in another Android application through `AccessibilityService`.
-2. Read exposed text from the accessibility node.
-3. Analyze the text locally with Harper `harper-core`.
-4. Return grammar/spelling lints and replacements.
-5. Display a non-blocking suggestion UI using accessibility overlays.
-6. Apply a selected correction to the target field safely.
-7. Avoid stale corrections when the user continues typing.
-8. Avoid sensitive fields such as password/PIN/OTP fields.
-9. Remain responsive while the user types.
-10. Never persist raw typed text by default.
-11. Be structured so more Android targets and UI improvements can be added without changing the grammar engine.
-
-The first end-to-end success case is:
-
-```text
-User opens a supported app
-        ↓
-User types:
-"This are a test"
-        ↓
-AccessibilityService detects editable node
-        ↓
-Harper analyzes text
-        ↓
-Suggestion:
-"are" → "is"
-        ↓
-User taps suggestion
-        ↓
-Field becomes:
-"This is a test"
-```
+1. **Use the real `harper-core`.** Do not rewrite grammar/spelling logic in Kotlin.
+2. **Do not expose Harper internals directly through UniFFI unless necessary.** Create a stable Android-facing Rust adapter/domain model.
+3. **Verify the actual dependency version at implementation time.** Do not blindly upgrade to an assumed “latest” version. Check `Cargo.lock`, the configured registry/source, upstream release/source, and Android build compatibility.
+4. **Use current upstream documentation/source when a Harper API is uncertain or has changed.** The agent must verify APIs before changing integration code.
+5. **Do not block Android's main/UI thread with synchronous native linting.** CPU/native analysis belongs on a dedicated background execution path.
+6. **Do not discard supported suggestion semantics.** Preserve replacement, insertion, removal, and any additional supported operations present in the selected `harper-core` version.
+7. **Do not use array indexes as stable issue IDs.** IDs must remain stable enough for UI interaction and stale-result validation.
+8. **Do not assume `ACTION_SET_TEXT` is universally reliable.** Put text correction behind a correction strategy abstraction and test per app/editor.
+9. **Do not use clipboard scraping, screenshots, OCR, or screen-reading hacks as the default correction path.** Only introduce exceptional fallbacks with explicit compatibility justification.
+10. **Do not log user-entered text.** Logs should be metadata-oriented and privacy-safe.
+11. **Keep architecture incremental-ready but do not prematurely build complex incremental parsing.** First build correct debounced snapshot analysis; later optimize using measurements.
+12. **Every phase has a gate.** Do not start the next phase until the current phase's tests and acceptance criteria pass.
+13. **Prefer small commits and small implementation steps.** Avoid giant refactors that combine unrelated behavior changes.
+14. **Measure before optimizing.** Record latency, allocations/memory where practical, cancellation behavior, and event rates before changing architecture for performance.
+15. **Preserve upstream compatibility.** When `harper-core` changes, isolate adaptation changes in the Rust compatibility layer whenever practical.
 
 ---
 
-# 2. Product Constraints
+# 1. Current MVP: What Exists
 
-## 2.1 Privacy
-
-The default pipeline must be:
+The current project has a sound foundation:
 
 ```text
-Target app
-  ↓
-AccessibilityService
-  ↓
-Local Kotlin process
-  ↓
-Rust harper-core
-  ↓
-Result
-  ↓
-Overlay
-```
-
-No raw text may be sent to a server.
-
-Do not log raw text.
-
-Do not persist raw text.
-
-Do not put raw text into crash reports, analytics events, debug telemetry, or exception messages.
-
-When diagnostics are needed, log metadata only:
-
-```text
-event=ANALYSIS_STARTED
-package=com.example.app
-chars=47
-generation=18
-```
-
-## 2.2 Sensitive Input
-
-Do not process:
-
-- password fields
-- PIN fields
-- OTP/authentication code fields
-- fields explicitly marked sensitive by the target app
-- fields excluded by the user's app settings
-
-Fail closed if field sensitivity cannot be determined reliably.
-
-## 2.3 User Control
-
-The user must be able to:
-
-- enable/disable the service
-- choose enabled apps or excluded apps
-- select language
-- disable overlays
-- inspect privacy information
-- disable automatic analysis
-- disable specific app packages
-
-Do not automatically submit accessibility settings changes for the user.
-
----
-
-# 3. Architecture
-
-```text
-                             OWN APP
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│  Jetpack Compose                                            │
-│        │                                                    │
-│        ▼                                                    │
-│  Screen ViewModels                                          │
-│        │                                                    │
-│        ▼                                                    │
-│  Use Cases / Repositories                                   │
-│        │                                                    │
-│        ├──────────────► DataStore                           │
-│        │                                                    │
-│        ▼                                                    │
-│  GrammarRepository                                          │
-│        │                                                    │
-│        ▼                                                    │
-│  HarperEngine                                               │
-│        │                                                    │
-│        ▼                                                    │
-│  UniFFI Kotlin Bindings                                     │
-└────────┼────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                         RUST                                │
-│                                                             │
-│                    harper-android                           │
-│                           │                                 │
-│                           ▼                                 │
-│                      harper-core                            │
-│                           │                                 │
-│                           ▼                                 │
-│                         Lint[]                              │
-└─────────────────────────────────────────────────────────────┘
-
-
-                     EXTERNAL APP PATH
-
-External app
-    │
-    ▼
-AccessibilityService
-    │
-    ▼
-AccessibilityController
-    │
-    ▼
-EditableNodeTracker
-    │
-    ▼
-TextSnapshot
-    │
-    ▼
-TextChangeDetector
-    │
-    ▼
-AnalysisScheduler
-    │
-    ▼
-GrammarRepository
-    │
-    ▼
-HarperEngine
-    │
-    ▼
-Lint results
-    │
-    ▼
-SuggestionModel
-    │
-    ▼
-OverlayManager
-    │
-    ├── indicator
-    ├── popup
-    └── optional inline error marker
-    │
-    ▼
-User selects suggestion
-    │
-    ▼
-CorrectionApplier
-    │
-    ▼
-Validate snapshot
-    │
-    ▼
-AccessibilityNodeInfo action
-    │
-    ▼
-Target field updated
-```
-
----
-
-# 4. Repository Strategy
-
-Prefer creating a dedicated Android project that consumes Harper rather than immediately maintaining a full fork.
-
-Recommended top-level layout:
-
-```text
-harper-android/
-├── android/
-│   ├── app/
-│   ├── build.gradle.kts
-│   └── settings.gradle.kts
-│
-├── rust/
-│   └── harper-android/
-│       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs
-│           ├── engine.rs
-│           ├── models.rs
-│           └── error.rs
-│
-├── docs/
-│   ├── architecture.md
-│   ├── privacy.md
-│   ├── accessibility.md
-│   ├── compatibility.md
-│   └── troubleshooting.md
-│
-├── tests/
-│   ├── rust/
-│   ├── android/
-│   └── compatibility/
-│
-└── README.md
-```
-
-Preferred dependency direction:
-
-```text
-Android app
-      ↓
-harper-android adapter
-      ↓
-Harper harper-core
-```
-
-Avoid copying Harper internals into Kotlin.
-
-If direct crates.io consumption is insufficient for the required API or version, use a pinned Git dependency or workspace integration. Keep the integration isolated so it can be upgraded later.
-
----
-
-# 5. Technology Decisions
-
-## 5.1 Android
-
-Use:
-
-- Kotlin
-- Jetpack Compose
-- AndroidX
-- ViewModel
-- Kotlin Coroutines
-- Kotlin Flow
-- DataStore
-- Android Accessibility APIs
-- Android NDK
-- Gradle Kotlin DSL
-
-Use dependency injection only if useful. Hilt is acceptable but is not mandatory for the MVP.
-
-## 5.2 Grammar Engine
-
-Use:
-
-```text
-Harper harper-core
-```
-
-Do not rewrite grammar logic in Kotlin.
-
-Do not use `harper.js` or `harper-wasm` for the native Android MVP.
-
-## 5.3 Rust/Kotlin Boundary
-
-Use UniFFI.
-
-Expose a deliberately small API rather than mirroring all Harper Rust types.
-
-Example conceptual interface:
-
-```text
-HarperEngine.create()
-HarperEngine.lint(text, language)
-HarperEngine.version()
-HarperEngine.capabilities()
-```
-
-Exact UniFFI syntax may be chosen by the agent based on the compatible UniFFI version.
-
-## 5.4 Build
-
-Use:
-
-- Android NDK
-- Cargo
-- cargo-ndk or a current equivalent
-- arm64-v8a for production devices
-- x86_64 for emulator/testing where needed
-
-Target API:
-
-```text
-compileSdk >= 36
-targetSdk = 36
-```
-
-Resolve the latest compatible stable Android Gradle Plugin, Kotlin, Compose BOM, and NDK versions during project setup instead of hard-coding obsolete versions from this document.
-
-## 5.5 UI
-
-Jetpack Compose for the app's own screens.
-
-Accessibility overlays for the external-app experience.
-
-## 5.6 Persistence
-
-DataStore for preferences.
-
-No database is required for MVP.
-
-Add Room only if a future feature requires structured historical data.
-
----
-
-# 6. AccessibilityService Design
-
-## 6.1 Service Responsibilities
-
-`HarperAccessibilityService` should only coordinate Android accessibility events.
-
-It should:
-
-- receive accessibility events
-- identify candidate editable nodes
-- notify the controller
-- expose required lifecycle state
-- delegate all other work
-
-It should NOT:
-
-- call Harper directly
-- contain long-running grammar algorithms
-- store raw text permanently
-- render large UI components
-- manage DataStore directly
-- contain app-specific grammar logic
-
-## 6.2 Configuration
-
-Configure the service to retrieve interactive window content as required.
-
-Use the narrowest event types and flags that satisfy the product.
-
-Do not request unrelated accessibility capabilities.
-
-Start from events such as:
-
-- `TYPE_VIEW_FOCUSED`
-- `TYPE_VIEW_TEXT_CHANGED`
-- `TYPE_WINDOW_STATE_CHANGED`
-- `TYPE_WINDOW_CONTENT_CHANGED` only when needed
-
-Avoid processing every accessibility event indiscriminately.
-
-## 6.3 Editable Node Detection
-
-Create:
-
-```text
-EditableNodeTracker
-```
-
-Responsibilities:
-
-- identify current focused editable node
-- identify package name
-- identify class/node metadata
-- determine whether text can be read
-- determine whether text can be replaced
-- determine whether field is sensitive
-- keep a stable identity for the current editing target
-
-Candidate detection order:
-
-```text
-isFocused
-     ↓
-isEditable
-     ↓
-text available
-     ↓
-not sensitive
-     ↓
-package allowed
-```
-
-Handle both standard Android views and Compose-backed apps as far as accessibility metadata permits.
-
-Do not assume every app exposes the same node structure.
-
----
-
-# 7. TextSnapshot Model
-
-Never pass around "just a String" when an edit can later be applied.
-
-Create an immutable model containing enough information to validate the result.
-
-Example:
-
-```kotlin
-data class TextSnapshot(
-    val packageName: String,
-    val nodeIdentity: NodeIdentity,
-    val text: String,
-    val selectionStart: Int?,
-    val selectionEnd: Int?,
-    val generation: Long,
-    val capturedAtElapsedMs: Long
-)
-```
-
-`NodeIdentity` may combine stable information available from the target node and current window context.
-
-Do not depend on `hashCode()` of an accessibility node as a permanent identity.
-
-The snapshot must represent the exact text that was analyzed.
-
----
-
-# 8. Stale Result Protection
-
-This is mandatory.
-
-Example:
-
-```text
-generation 10
-"This are good"
-       ↓
-Harper analysis starts
-
-User types:
-"This are really good"
-       ↓
-generation 11
-
-generation 10 result returns
-       ↓
-DISCARD
-```
-
-Implement one or both:
-
-1. generation IDs
-2. exact text comparison before applying
-
-Prefer both.
-
-Application of a correction is valid only if:
-
-```text
-current node == snapshot node
-AND
-current text == snapshot text
-AND
-snapshot generation == current generation
-```
-
-If any check fails:
-
-```text
-reject correction
-```
-
-Never apply a stale correction.
-
----
-
-# 9. Analysis Pipeline
-
-Use a coroutine/Flow pipeline.
-
-Conceptual flow:
-
-```text
-AccessibilityEvent
-      ↓
-candidate node
-      ↓
-extract text
-      ↓
-snapshot
-      ↓
-distinctUntilChanged
-      ↓
-debounce ~250–400 ms
-      ↓
-mapLatest
-      ↓
-Harper
-      ↓
-results
-```
-
-Use `mapLatest` or an equivalent cancellation mechanism so newer text invalidates older analyses.
-
-Do not block the main thread.
-
-Do not create an unbounded queue.
-
-Do not launch one independent coroutine per keystroke without cancellation.
-
----
-
-# 10. Text Processing Rules
-
-Before calling Harper:
-
-```text
-if text.length < minimumThreshold
-    skip
-
-if protected field
-    skip
-
-if app excluded
-    skip
-
-if text unchanged
-    skip
-```
-
-Avoid aggressive minimum-length rules that prevent legitimate short sentences. Keep the threshold small and configurable internally.
-
-Use Harper's language capabilities rather than attempting crude language detection in the MVP.
-
-Where language selection is unclear, default to the user's selected language.
-
----
-
-# 11. Rust `harper-android` Adapter
-
-Create an Android-specific Rust crate:
-
-```text
-rust/harper-android/
-```
-
-It should depend on:
-
-```text
+Android AccessibilityService
+        |
+        v
+Editable node tracking / snapshot
+        |
+        v
+Kotlin debounce + repository
+        |
+        v
+UniFFI
+        |
+        v
+Rust harper-android bridge
+        |
+        v
 harper-core
+        |
+        v
+LintResult -> Kotlin -> overlay/correction
 ```
 
-Keep all Android FFI-facing structures simple.
-
-Conceptual models:
+The current Rust bridge already uses the real Harper engine and curated linting, conceptually along these lines:
 
 ```rust
-pub struct LintResult {
-    pub start: u32,
-    pub end: u32,
-    pub message: String,
-    pub suggestions: Vec<String>,
-}
+let dict = Arc::new(harper_core::spell::FstDictionary::curated());
+let doc = Document::new_plain_english(&text, &*dict);
+let mut linter = harper_core::linting::LintGroup::new_curated(
+    dict,
+    harper_core::Dialect::American,
+);
+let lints = linter.lint(&doc);
 ```
 
-Add fields only when useful to Android.
+That means the project is **not** a fake/reimplemented grammar engine. It already uses real `harper-core` functionality.
 
-Do not expose internal Harper parser objects to Kotlin.
+However, the integration surface is still narrow.
 
-Do not serialize unnecessary internal structures.
+## Current limitations to eliminate
 
-## 11.1 Error handling
-
-Never panic across the FFI boundary for normal user input.
-
-Return structured errors:
-
-```text
-EngineError
-```
-
-and map them to Kotlin exceptions/result types.
-
-A malformed or unsupported text input should fail gracefully, not crash the accessibility service.
+| Area | Current state | Target |
+|---|---|---|
+| Real Harper core | Yes | Keep |
+| Curated linting | Yes | Keep/reuse efficiently |
+| Grammar | Yes | Keep |
+| Spelling | Yes | Keep |
+| Dictionary reuse | Rebuilt on lint call | Persistent/reusable |
+| Engine state | Stateless | Stateful session/engine |
+| Dialect | Hard-coded American | Configurable |
+| Language parameter | Passed from Kotlin but ignored | Explicitly modeled/configured |
+| Lint configuration | Minimal | Full supported configuration surface |
+| Ignored rules | Missing | Supported |
+| User dictionary | Missing | Supported |
+| Suggestion semantics | Only non-empty `ReplaceWith` strings are exposed | Preserve all supported suggestion operations |
+| Rich lint metadata | Minimal | Stable Android-facing issue model |
+| Document/parser abstraction | Plain English only | Extensible, correct mode selection |
+| Analysis thread | Current flow can execute native linting on Main | Dedicated background execution |
+| Cancellation | Kotlin `mapLatest` alone | End-to-end cancellation/stale-result strategy |
+| Multi-lint overlay | Basic | Rich list/anchor UI |
+| Correction | `ACTION_SET_TEXT` | Strategy abstraction + selection-safe behavior |
+| Event filtering | Basic | IME/composition-aware filtering |
+| Result identity | Position based | Stable issue IDs |
+| Config persistence | Limited | Centralized persistent settings |
+| Benchmarking | Limited | Regression benchmark suite |
 
 ---
 
-# 12. UniFFI Boundary
+# 2. Definition of “Full harper-core” for This Project
 
-The Kotlin layer should see a stable API such as:
+“Use all of Harper” does **not** mean exposing every internal Rust type through UniFFI.
+
+It means the app should use the user-relevant functionality offered by the selected Harper core version and avoid unnecessarily throwing away information.
+
+## Required capabilities
+
+### Analysis
+
+- Real `harper-core` linter pipeline
+- Curated lint group
+- Correct dictionary shared between document/parser and linter
+- Configurable dialect
+- Configurable lint enable/disable state where supported
+- Ignored lint/rule support where supported
+- User dictionary support where supported
+- Correct document/parser mode for the text being analyzed
+
+### Suggestions
+
+The Rust adapter must preserve the semantics of supported `harper-core::linting::Suggestion` variants.
+
+At minimum, for versions that expose them, handle:
+
+- `ReplaceWith`
+- `InsertAfter`
+- `Remove`
+
+If the selected version adds more variants, the compatibility layer must explicitly account for them rather than silently dropping them.
+
+### Integration contract
+
+The Android side should see stable domain types such as:
 
 ```text
 HarperEngine
-  lint(text, language)
-  version()
-  capabilities()
+AnalysisRequest
+AnalysisResult
+HarperLint
+HarperSuggestion
+EditOperation
+HarperConfig
+DictionaryEntry
+Dialect
 ```
 
-Potential Kotlin domain model:
-
-```kotlin
-data class GrammarSuggestion(
-    val start: Int,
-    val end: Int,
-    val message: String,
-    val replacements: List<String>
-)
-```
-
-Do not leak Rust implementation details such as parser handles, references, or internal lifetimes.
-
-Treat this boundary as an API contract.
+The Android app should not become coupled to every changing internal Harper Rust type.
 
 ---
 
-# 13. Correction Strategy
-
-## MVP
-
-Prefer replacing the entire field when that is the most reliable cross-app operation.
-
-But before doing so:
+# 3. Target Architecture
 
 ```text
-1. capture exact text
-2. verify target node
-3. verify current text
-4. construct corrected text
-5. apply
+┌──────────────────────────────────────────────────────┐
+│                    Android UI                        │
+│ Settings / Overlay / Suggestion picker / Status     │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       v
+┌──────────────────────────────────────────────────────┐
+│           Accessibility Integration Layer            │
+│ Event filtering / node tracking / IME handling      │
+└──────────────────────┬───────────────────────────────┘
+                       │ TextSnapshot / AnalysisRequest
+                       v
+┌──────────────────────────────────────────────────────┐
+│              Analysis Coordinator                    │
+│ debounce / scheduling / cancellation / generations │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       v
+┌──────────────────────────────────────────────────────┐
+│         Harper Android Rust Compatibility API        │
+│ stable UniFFI types / edit operations / config      │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       v
+┌──────────────────────────────────────────────────────┐
+│                  Harper Engine                       │
+│ persistent dictionary / config / lint group         │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       v
+┌──────────────────────────────────────────────────────┐
+│                    harper-core                       │
+│ Document / Parser / Dictionary / LintGroup / lints  │
+└──────────────────────────────────────────────────────┘
 ```
 
-## V2
+## Key architectural rule
 
-Implement minimal-range replacement when the target app supports reliable cursor/selection operations.
-
-Conceptual transformation:
+The boundary must remain:
 
 ```text
-old:
-"I has a car"
-
-lint:
-start = 2
-end   = 5
-replacement = "have"
-
-new:
-"I have a car"
+Android
+   -> HarperAndroid stable API
+   -> Rust compatibility/adaptation layer
+   -> harper-core
 ```
 
-The correction engine must preserve unaffected text.
+Do not make the app directly depend on unstable internal Harper implementation details unless there is no practical alternative.
 
 ---
 
-# 14. Applying Text
+# 4. Recommended Project Structure
 
-For editable nodes that support it, use the accessibility action intended to set text.
-
-Conceptual operation:
-
-```text
-AccessibilityNodeInfo.performAction(
-    ACTION_SET_TEXT,
-    arguments
-)
-```
-
-For each correction:
-
-```text
-fetch current node
-        ↓
-read current text
-        ↓
-compare with analyzed snapshot
-        ↓
-if identical:
-    apply
-else:
-    reject
-```
-
-Never blindly overwrite a field after the user has changed it.
-
-Where supported, preserve selection/cursor position.
-
-If a target application does not support the required action reliably, record it as a compatibility limitation rather than adding unsafe fallback automation.
-
----
-
-# 15. Overlay Architecture
-
-Create:
-
-```text
-OverlayManager
-```
-
-with components:
-
-```text
-SuggestionIndicator
-SuggestionPopup
-OptionalInlineMarker
-```
-
-MVP UI:
-
-```text
-             target app
-
-      ┌─────────────────────┐
-      │ This are a test     │
-      └─────────────────────┘
-               ▲
-               │
-         suggestion icon
-               │
-               ▼
-      ┌─────────────────────┐
-      │ "are" → "is"        │
-      │ [ Apply ] [ Ignore ]│
-      └─────────────────────┘
-```
-
-Do not attempt exact Grammarly-style rendering first.
-
-Make the first overlay robust and accessible.
-
----
-
-# 16. Character-Level Positioning
-
-For advanced visual feedback, use Android accessibility text-character location APIs when supported.
-
-Desired pipeline:
-
-```text
-Harper lint range
-       ↓
-character range
-       ↓
-Accessibility character bounds
-       ↓
-screen coordinates
-       ↓
-overlay marker
-```
-
-The implementation must gracefully fall back when character-location data is unavailable.
-
-Possible fallback order:
-
-```text
-character range
-    ↓ unavailable
-node bounds + heuristic position
-    ↓ unreliable
-generic indicator near field
-```
-
-Never block grammar checking because precise underline positioning is unavailable.
-
----
-
-# 17. Overlay UX Rules
-
-The overlay must:
-
-- not capture taps unrelated to the suggestion
-- disappear when the focused field changes
-- disappear when the app changes
-- disappear when the analyzed text changes substantially
-- be keyboard-aware
-- avoid blocking the typing cursor
-- respect display cutouts and safe areas
-- be dismissed by the user
-- provide clear apply/ignore actions
-- remain usable with TalkBack where practical
-
-Avoid notification-like spam.
-
-If there are many lints, group them into a single compact state rather than opening a new overlay for every error.
-
----
-
-# 18. App Filtering
-
-Implement:
-
-```text
-AppPolicy
-```
-
-with:
-
-```text
-Mode:
-    ALLOWLIST
-    BLOCKLIST
-```
-
-MVP default should be privacy-conscious.
-
-Store package names, not app labels alone.
-
-Example:
-
-```text
-com.example.editor
-com.google.android.gm
-```
-
-Add a settings screen to manage the policy.
-
-Do not inspect app content when the package is excluded.
-
----
-
-# 19. Sensitive Field Detection
-
-At minimum, inspect accessibility metadata indicating password or similar protected input.
-
-Also recognize likely credential-related input types where the API exposes them.
-
-Do not attempt to "guess" that a normal free-text field contains sensitive text and then silently process it.
-
-The safest logic is:
-
-```text
-explicitly protected
-    → never process
-
-uncertain and high-risk
-    → skip
-
-normal text field
-    → analyze
-```
-
-Document the limitations in `docs/privacy.md`.
-
----
-
-# 20. Main App Screens
-
-Build the following screens in Compose.
-
-## 20.1 Onboarding
-
-Explain:
-
-- what the service does
-- what accessibility access means
-- what text is inspected
-- that grammar analysis is local
-- how to enable/disable the service
-
-The disclosure must be prominent and understandable.
-
-## 20.2 Home
-
-Display:
-
-```text
-Service status
-Enabled/Disabled
-Current language
-Supported/blocked apps
-```
-
-## 20.3 Settings
-
-Include:
-
-- enable/disable
-- language
-- app policy
-- overlay toggle
-- analysis behavior
-- privacy information
-- diagnostics
-
-## 20.4 Privacy
-
-Clearly describe:
-
-```text
-Text is analyzed locally.
-Raw typed text is not persisted by default.
-The service may inspect accessible text fields in selected applications.
-Password/protected fields are excluded.
-```
-
-Do not make claims the implementation does not actually enforce.
-
----
-
-# 21. Android Permission / Accessibility Flow
-
-The app must not silently assume accessibility is enabled.
-
-Flow:
-
-```text
-App launch
-    ↓
-check service state
-    ↓
-if disabled:
-    show explanation
-    ↓
-user chooses to enable
-    ↓
-open Android Accessibility Settings
-    ↓
-user enables service
-    ↓
-return to app
-    ↓
-verify service state
-```
-
-Do not pretend that the accessibility service is enabled until verified.
-
----
-
-# 22. Google Play Policy Requirements
-
-Treat Google Play compliance as an explicit engineering deliverable.
-
-The app should:
-
-- use AccessibilityService only for functionality that genuinely depends on it
-- provide required in-app prominent disclosure
-- obtain affirmative user consent where required
-- complete the Accessibility API declaration in Play Console
-- document the exact accessibility use case
-- avoid misleading `isAccessibilityTool` declarations
-- request only the accessibility capabilities actually needed
-- prefer narrower APIs when a narrower API can perform the function
-
-Do not attempt to bypass Play policy through manifest flags or misleading classifications.
-
-The coding agent must create:
-
-```text
-docs/accessibility.md
-```
-
-containing:
-
-- service purpose
-- API usage
-- capabilities requested
-- data processed
-- disclosure wording
-- user controls
-- known limitations
-
----
-
-# 23. Service Lifecycle
-
-Account for:
-
-- service connected/disconnected
-- target app changed
-- active window changed
-- node becomes stale
-- node no longer editable
-- screen turns off
-- user leaves app
-- service interrupted
-- process restarts
-
-When a target becomes invalid:
-
-```text
-cancel analysis
-clear overlays
-clear current snapshot
-release node references
-```
-
-Do not retain stale `AccessibilityNodeInfo` objects longer than needed.
-
-Always reacquire the current node before applying a correction.
-
----
-
-# 24. Threading Model
-
-Use:
-
-```text
-Main thread
-    ↓
-UI and service event coordination
-
-Default/background dispatcher
-    ↓
-text extraction that is safe to perform off main
-Harper analysis
-
-Main thread
-    ↓
-overlay updates
-accessibility actions
-```
-
-Do not block the main thread with Rust analysis.
-
-Do not perform large recursive accessibility-tree scans continuously.
-
-Cache only short-lived references needed for current processing.
-
----
-
-# 25. Performance Requirements
-
-Initial targets:
-
-```text
-No visible typing lag
-No unbounded analysis queue
-No duplicate analysis of identical text
-No raw-text logging
-No analysis on main thread
-```
-
-Aim for:
-
-```text
-typical short text analysis: <150 ms
-UI response after result: <100 ms where practical
-```
-
-These are engineering targets, not guarantees.
-
-Measure them with benchmarks and real devices.
-
-Add:
-
-- Macrobenchmark for startup and key interactions
-- Baseline Profile
-- Startup Profile where useful
-
-Only optimize after measuring.
-
----
-
-# 26. Memory Requirements
-
-Do not retain:
-
-- complete document history
-- old text snapshots indefinitely
-- all past lint results
-- all accessibility nodes in memory
-
-Keep:
-
-```text
-current target
-current snapshot
-current generation
-current result
-```
-
-and a small bounded cache if profiling proves it useful.
-
----
-
-# 27. Error Handling
-
-Expected failures must be non-fatal.
-
-Examples:
-
-```text
-Harper engine initialization failure
-        ↓
-disable analysis
-        ↓
-show service-level diagnostic only
-
-Accessibility node unavailable
-        ↓
-clear current target
-
-ACTION_SET_TEXT rejected
-        ↓
-show "Unable to apply" state
-        ↓
-do not retry aggressively
-
-FFI error
-        ↓
-recover service
-```
-
-Never crash the AccessibilityService because one target app exposed an unexpected node.
-
----
-
-# 28. Testing Strategy
-
-Testing is a first-class requirement.
-
-## 28.1 Rust Tests
-
-Test:
-
-- engine creation
-- valid linting
-- malformed/empty input
-- Unicode text
-- long text
-- multiple lints
-- replacement ranges
-- errors across FFI boundary
-
-## 28.2 Kotlin Unit Tests
-
-Test:
-
-- debounce logic
-- distinct text filtering
-- generation handling
-- snapshot validation
-- protected-field filtering
-- app policy
-- correction transformation
-- overlay state machine
-
-## 28.3 Android Instrumentation
-
-Test:
-
-- service lifecycle
-- accessibility configuration
-- overlay permission/configuration
-- target node detection
-- text replacement behavior
-- Activity navigation
-
-## 28.4 Test Harness — No Full Keyboard Required
-
-Do **not** build a full keyboard/IME or a production-style in-app writing editor just to test Harper.
-
-Test Harper directly with Rust unit/integration tests. Use a minimal Android fixture only when a real accessibility node is required to test `AccessibilityService`. The fixture is a deterministic test target, not a second product.
-
-The fixture may expose only representative controls:
-
-```text
-standard editable field
-multiline editable field
-password field
-OTP/PIN-style field
-Compose text field
-multiple editable fields
-rapid text-change scenario
-large-text scenario
-```
-
-Test levels:
-
-```text
-Rust tests            → Harper correctness
-Kotlin tests          → state/scheduling/correction logic
-Android fixture      → AccessibilityService behavior
-Real apps             → compatibility and UX
-```
-
----
-
-# 29. Accessibility Compatibility Matrix
-
-Maintain:
-
-```text
-docs/compatibility.md
-```
-
-and test actual applications manually.
-
-Example:
-
-| App | Detect | Read | Lint | Overlay | Apply |
-|---|---|---|---|---|---|
-| Internal fixture | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Chrome | TBD | TBD | TBD | TBD | TBD |
-| Gmail | TBD | TBD | TBD | TBD | TBD |
-| WhatsApp | TBD | TBD | TBD | TBD | TBD |
-| Telegram | TBD | TBD | TBD | TBD | TBD |
-| Discord | TBD | TBD | TBD | TBD | TBD |
-| Instagram | TBD | TBD | TBD | TBD | TBD |
-| Google Docs | TBD | TBD | TBD | TBD | TBD |
-
-Do not mark an app "supported" based only on reading text. Test correction and overlay behavior too.
-
----
-
-# 30. Accessibility Overlay Compatibility
-
-Test:
-
-- portrait
-- landscape
-- split screen
-- keyboard visible
-- keyboard hidden
-- different font scales
-- display density
-- screen cutouts
-- multiple windows
-- dark/light theme
-- TalkBack
-- rotation/configuration change
-
----
-
-# 31. Security Requirements
-
-The app must:
-
-- use no unnecessary network permission
-- not introduce a cloud dependency for grammar
-- avoid raw-text telemetry
-- avoid storing raw text
-- avoid logging passwords
-- avoid requesting unrelated Android permissions
-- validate all correction inputs
-- guard against stale-node writes
-- keep the FFI boundary small
-- pin critical dependency versions in release builds
-- run dependency/security checks during CI
-
-If network connectivity is added in a future version, it must be explicitly documented and must never be used for grammar processing by default without a new product/security review.
-
----
-
-# 32. Dependency Management
-
-Use stable, maintained versions at implementation time.
-
-The agent must verify compatible current versions for:
-
-```text
-Android Gradle Plugin
-Kotlin
-Compose BOM
-AndroidX
-Coroutines
-DataStore
-NDK
-Rust toolchain
-UniFFI
-```
-
-Do not blindly copy versions from an old tutorial.
-
-Commit a reproducible lock state where the ecosystem supports it.
-
-Document minimum supported Android version separately from target SDK.
-
----
-
-# 33. CI Pipeline
-
-Create CI that runs:
-
-```text
-1. Kotlin formatting/checks
-2. Kotlin unit tests
-3. Rust fmt
-4. Rust clippy
-5. Rust tests
-6. UniFFI generation/build
-7. Android debug build
-8. Instrumented tests when emulator infrastructure is available
-9. Release build validation
-```
-
-Recommended quality gates:
-
-```text
-ktlint or equivalent → pass
-detekt or equivalent → pass if adopted
-cargo fmt --check → pass
-cargo clippy → pass
-cargo test → pass
-assembleDebug → pass
-```
-
-Do not fail CI on harmless warnings unless the project chooses to enforce them.
-
----
-
-# 34. Build Automation
-
-The agent must create a repeatable command sequence.
-
-Example conceptual commands:
-
-```bash
-# Rust
-cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test
-
-# Android
-./gradlew test
-./gradlew lint
-./gradlew assembleDebug
-```
-
-Add project-specific commands for building Android Rust artifacts.
-
-The README must contain a clean "from zero to APK" path.
-
----
-
-# 35. Agent Workflow
-
-The coding agent must work in this order.
-
-## Step 0 — Inspect Environment
-
-Before modifying code:
-
-1. inspect repository
-2. detect existing Gradle/Rust toolchains
-3. inspect Harper version/API available
-4. inspect installed Android SDK/NDK
-5. check whether a Java/Kotlin/Rust bridge already exists
-6. identify current stable dependency versions
-7. identify all build constraints
-
-Do not assume paths or versions.
-
-Output an internal implementation map before coding.
-
-## Step 1 — Create Skeleton
-
-Create:
+Target structure should evolve toward something similar to:
 
 ```text
 android/
+  app/
+    ...
+  accessibility/
+    HarperAccessibilityService.kt
+    EditableNodeTracker.kt
+    InputEventClassifier.kt
+    ProtectedFieldDetector.kt
+    AppPolicy.kt
+    ImeCompositionTracker.kt
+  analysis/
+    AnalysisCoordinator.kt
+    AnalysisRepository.kt
+    AnalysisModels.kt
+    AnalysisState.kt
+    AnalysisScheduler.kt
+  correction/
+    CorrectionApplier.kt
+    CorrectionStrategy.kt
+    AccessibilityCorrectionStrategy.kt
+    CorrectionModels.kt
+  overlay/
+    OverlayManager.kt
+    OverlayController.kt
+    OverlayPositioner.kt
+    LintPopup.kt
+    SuggestionList.kt
+  settings/
+    HarperSettings.kt
+    HarperSettingsRepository.kt
+    SettingsModel.kt
+  security/
+    SensitiveContentPolicy.kt
+    PrivacyLogger.kt
+  compatibility/
+    AppCompatibilityPolicy.kt
+
 rust/harper-android/
-docs/
-tests/
+  src/
+    lib.rs
+    engine.rs
+    config.rs
+    dictionary.rs
+    models.rs
+    suggestions.rs
+    edit_operations.rs
+    document.rs
+    compatibility.rs
+    errors.rs
+    tests/
 ```
 
-Make the Android project compile.
-
-Acceptance:
-
-```text
-./gradlew assembleDebug
-```
-
-passes.
-
-## Step 2 — Accessibility Service
-
-Implement the minimum service.
-
-Acceptance:
-
-```text
-Open fixture app
-focus EditText
-service identifies node
-service reads text
-```
-
-Do not add Harper yet.
-
-## Step 3 — Rust Engine
-
-Integrate:
-
-```text
-harper-core
-```
-
-through the Rust adapter and UniFFI.
-
-Acceptance:
-
-```text
-Kotlin test input:
-"This are a test"
-
-Rust result contains:
-replacement related to "are" → "is"
-```
-
-The exact returned wording/rule IDs may vary with the installed Harper release.
-
-## Step 4 — Analysis Pipeline
-
-Implement:
-
-```text
-event
-→ snapshot
-→ debounce
-→ cancellation
-→ Harper
-```
-
-Acceptance:
-
-```text
-rapid typing
-```
-
-does not cause stale results to appear.
-
-## Step 5 — Correction
-
-Implement snapshot validation and text application.
-
-Acceptance:
-
-```text
-fixture field:
-"This are a test"
-
-tap suggestion
-
-result:
-"This is a test"
-```
-
-Also test:
-
-```text
-type something else while analysis is running
-```
-
-and verify the old result is rejected.
-
-## Step 6 — Overlay
-
-Implement:
-
-```text
-indicator
-popup
-apply
-ignore
-dismiss
-```
-
-Acceptance:
-
-- popup appears near the target
-- does not prevent normal typing
-- disappears when field/app changes
-- apply updates text
-- ignore removes suggestion
-
-## Step 7 — Security/Privacy
-
-Implement:
-
-- protected field filtering
-- app allow/block policy
-- no raw text logs
-- no raw text persistence
-- privacy screen
-
-Acceptance:
-
-```text
-password field → no Harper call
-OTP field → no Harper call
-blocked package → no Harper call
-```
-
-## Step 8 — Performance
-
-Measure:
-
-- startup
-- text extraction
-- analysis latency
-- overlay latency
-- memory
-- typing responsiveness
-
-Then add Baseline Profile/Startup Profile where useful.
-
-## Step 9 — Compatibility
-
-Run the test matrix against the selected target apps.
-
-Do not label unsupported apps as compatible.
-
-## Step 10 — Release Hardening
-
-Before release:
-
-```text
-release build
-shrinking/proguard validation if enabled
-native library packaging
-privacy review
-accessibility disclosure review
-Play Console declaration checklist
-```
+Names may differ; responsibilities must not become tangled.
 
 ---
 
-# 36. Definition of Done — MVP
+# 5. Core Data Models
 
-MVP is complete only when ALL are true:
+## TextSnapshot
 
-## Architecture
-
-- [ ] Kotlin/Compose app builds
-- [ ] AccessibilityService is isolated from business logic
-- [ ] Harper engine is isolated behind `HarperEngine`
-- [ ] Rust uses `harper-core`
-- [ ] Kotlin/Rust boundary uses UniFFI
-- [ ] DataStore stores only settings
-- [ ] No raw text persistence
-
-## Functional
-
-- [ ] Detect focused editable node
-- [ ] Read text
-- [ ] Debounce changes
-- [ ] Cancel stale analyses
-- [ ] Run Harper
-- [ ] Display suggestion
-- [ ] Apply correction
-- [ ] Ignore correction
-- [ ] Clear state on field/app change
-
-## Security
-
-- [ ] Password fields skipped
-- [ ] OTP/PIN fields skipped where detectable
-- [ ] Excluded packages skipped
-- [ ] Raw text not logged
-- [ ] No unnecessary network dependency
-
-## Reliability
-
-- [ ] Service survives target app changes
-- [ ] Service survives stale nodes
-- [ ] Failed replacements do not corrupt text
-- [ ] FFI failures do not crash the service
-- [ ] Tests pass
-
-## UX
-
-- [ ] Onboarding explains accessibility access
-- [ ] Privacy explanation is accessible
-- [ ] Service state is visible
-- [ ] Settings are usable
-- [ ] Overlay is dismissible
-
----
-
-# 37. Definition of Done — V2
-
-V2 may be considered complete when:
-
-- [ ] minimal-range replacement works reliably
-- [ ] character-level positioning is used where supported
-- [ ] inline indicators are implemented
-- [ ] multi-lint navigation works
-- [ ] app compatibility coverage improves
-- [ ] performance targets are measured and documented
-- [ ] Baseline/Startup Profiles are included
-- [ ] TalkBack behavior is reviewed
-- [ ] configuration is resilient across device rotations/windows
-
----
-
-# 38. Future Architecture
-
-Keep the architecture ready for these without implementing them in MVP:
+Represents the exact text state used for an analysis.
 
 ```text
-Future:
-    rewriting
-    tone suggestions
-    paraphrasing
-    custom dictionaries
-    writing statistics
-    additional languages
-    user correction memory
-    optional cloud AI
-    per-app settings
-```
-
-Future AI services must remain behind a separate interface:
-
-```text
-GrammarEngine
-      │
-      ├── HarperLocalEngine
-      │
-      └── OptionalRemoteEngine
-```
-
-Do not contaminate the core AccessibilityService with AI provider logic.
-
----
-
-# 39. Important Design Principle
-
-The Android application is another adapter around Harper, not a fork of the grammar engine.
-
-Think:
-
-```text
-                    Harper Core
-                        │
-      ┌─────────────────┼─────────────────┐
-      │                 │                 │
-     WASM               LSP             Native
-      │                 │                 │
-    Web/JS             Editors         Desktop/Android
-```
-
-For this Android project:
-
-```text
-AccessibilityService
-        ↓
-Android adapter
-        ↓
-Harper native Rust
-        ↓
-harper-core
-```
-
-The target platform changes. The grammar intelligence does not.
-
----
-
-# 40. What NOT to Build
-
-The agent must not introduce these shortcuts:
-
-```text
-❌ OCR
-❌ screenshot parsing
-❌ WebView for Harper
-❌ harper.js as the native Android engine
-❌ a second grammar engine written in Kotlin
-❌ large handwritten JNI layer
-❌ automatic correction without confirmation
-❌ cloud grammar processing
-❌ raw text analytics
-❌ raw text database
-❌ unrestricted accessibility event processing
-❌ storing every AccessibilityNodeInfo
-❌ blindly applying stale corrections
-❌ fake AccessibilityService tool classification
-❌ requesting accessibility capabilities unrelated to the feature
-❌ foreground service merely to keep the app alive
-```
-
----
-
-# 41. Agent Coding Rules
-
-The autonomous agent must:
-
-1. Make small, compilable changes.
-2. Run relevant tests after each phase.
-3. Never proceed past a failed architectural acceptance test without resolving it.
-4. Keep Rust and Kotlin responsibilities separate.
-5. Keep AccessibilityService thin.
-6. Preserve privacy constraints even during debugging.
-7. Never log raw text to "make debugging easier."
-8. Prefer robust fallbacks over assumptions about target apps.
-9. Document compatibility failures instead of hiding them.
-10. Keep external dependencies minimal.
-11. Verify current API/dependency behavior against official documentation when implementation details may have changed.
-12. Do not silently change the product requirements in this document.
-
----
-
-# 42. Recommended First Implementation Slice
-
-Do not start with the complete UI.
-
-Build exactly this:
-
-```text
-Internal fixture app
-        │
-        ▼
-EditText
-        │
-        ▼
-Harper Android AccessibilityService
-        │
-        ▼
 TextSnapshot
-        │
-        ▼
-300 ms debounce
-        │
-        ▼
-UniFFI
-        │
-        ▼
-Rust
-        │
-        ▼
-harper-core
-        │
-        ▼
-Lint
-        │
-        ▼
-Console/debug result
-```
-
-Once that works:
-
-```text
-Lint
- ↓
-Overlay
- ↓
-Apply
-```
-
-Then:
-
-```text
-Compatibility
- ↓
-Privacy hardening
- ↓
-Performance
- ↓
-Release
-```
-
-This minimizes debugging complexity and gives the agent a deterministic sequence of milestones.
-
----
-
-# 43. Final Acceptance Scenario
-
-The final MVP demonstration must show:
-
-### Scenario A — Normal sentence
-
-```text
-Target: internal fixture EditText
-
-Input:
-"This are a test"
-
-Expected:
-Harper detects a grammar issue.
-
-Expected UI:
-Suggestion is visible.
-
-User action:
-Tap Apply.
-
-Expected text:
-"This is a test"
-```
-
-### Scenario B — Stale result
-
-```text
-Input:
-"This are a test"
-
-Analysis begins.
-
-User changes field to:
-"This are a completely different sentence"
-
-Old analysis returns.
-
-Expected:
-Old correction is discarded.
-No incorrect replacement occurs.
-```
-
-### Scenario C — Password
-
-```text
-Password field focused.
-
-Expected:
-No text is sent to Harper.
-No overlay is shown.
-```
-
-### Scenario D — Blocked app
-
-```text
-Blocked package focused.
-
-Expected:
-No grammar analysis.
-No overlay.
-```
-
-### Scenario E — App switch
-
-```text
-Field in App A active.
-Suggestion visible.
-
-User opens App B.
-
-Expected:
-App A overlay disappears.
-App A snapshot becomes invalid.
-No App A correction may be applied.
-```
-
----
-
-# 44. Official References to Consult During Implementation
-
-The agent should verify current details against official sources before finalizing implementation, especially because Android and Google Play behavior changes over time.
-
-Android:
-
-- AccessibilityService:
-  https://developer.android.com/reference/android/accessibilityservice/AccessibilityService
-- AccessibilityNodeInfo:
-  https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo
-- Accessibility development:
-  https://developer.android.com/guide/topics/ui/accessibility/service
-- Android app architecture:
-  https://developer.android.com/topic/architecture
-- DataStore:
-  https://developer.android.com/topic/libraries/architecture/datastore
-- NDK:
-  https://developer.android.com/ndk
-- App startup / Baseline Profiles:
-  https://developer.android.com/topic/performance/baselineprofiles/overview
-
-Google Play:
-
-- AccessibilityService policy:
-  https://support.google.com/googleplay/android-developer/answer/10964491
-- Restricted permissions / Accessibility policy:
-  https://support.google.com/googleplay/android-developer/
-
-Harper:
-
-- Repository:
-  https://github.com/Automattic/harper
-- Architecture:
-  https://writewithharper.com/docs/contributors/architecture
-
-Rust/UniFFI:
-
-- UniFFI:
-  https://mozilla.github.io/uniffi-rs/
-
----
-
-# 45. Final Architecture Summary
-
-```text
-┌──────────────────────────────────────────────────────────┐
-│                    Android / Kotlin                      │
-│                                                          │
-│ Compose UI                                               │
-│ ViewModels                                               │
-│ DataStore                                                │
-│                                                          │
-│ AccessibilityService                                    │
-│     ↓                                                    │
-│ AccessibilityController                                 │
-│     ↓                                                    │
-│ EditableNodeTracker                                     │
-│     ↓                                                    │
-│ TextSnapshot + Generation                               │
-│     ↓                                                    │
-│ Debounce + mapLatest                                    │
-│     ↓                                                    │
-│ GrammarRepository                                       │
-│     ↓                                                    │
-│ HarperEngine                                             │
-│     ↓                                                    │
-│ UniFFI                                                   │
-└───────────────────────┬──────────────────────────────────┘
-                        │
-                        ▼
-┌──────────────────────────────────────────────────────────┐
-│                       Rust                               │
-│                                                          │
-│ harper-android                                           │
-│     ↓                                                    │
-│ harper-core                                              │
-│     ↓                                                    │
-│ Lint / Suggestions                                      │
-└───────────────────────┬──────────────────────────────────┘
-                        │
-                        ▼
-                OverlayManager
-                        │
-             ┌──────────┴──────────┐
-             ▼                     ▼
-        Indicator              Popup
-                                   │
-                              user action
-                                   │
-                                   ▼
-                         Snapshot validation
-                                   │
-                                   ▼
-                    Accessibility ACTION_SET_TEXT
-```
-
-**Core rule:** Keep the Android layer responsible for Android, the Rust layer responsible for grammar analysis, and the UI layer responsible for presentation. The interface between them should stay small, explicit, testable, and privacy-preserving.
-
-
-# 53. Additional Mandatory Architecture
-
-These requirements refine the earlier architecture and are part of the final implementation contract.
-
-## 53.1 InputProvider Abstraction
-
-Do not couple the grammar pipeline directly to AccessibilityService.
-
-```text
-InputProvider
-├── AccessibilityTextInputProvider
-└── FutureKeyboardTextInputProvider
-```
-
-Common pipeline:
-
-```text
-InputProvider → TextSnapshot → AnalysisScheduler → GrammarEngine → Suggestions → Presentation
-```
-
-The keyboard provider is only an architectural extension point. **Do not build a full keyboard/IME for MVP.**
-
-## 53.2 InputSessionManager
-
-Introduce a dedicated session owner between the accessibility layer and scheduler.
-
-Responsibilities:
-
-- establish the current editing target
-- invalidate it when package/window/node changes
-- own the generation counter
-- publish immutable snapshots
-- clear state on lifecycle changes
-
-## 53.3 CorrectionPlanner
-
-Separate deciding what to change from actually editing the target.
-
-```text
-HarperResult → CorrectionPlanner → ValidatedCorrection → CorrectionApplier
-```
-
-`CorrectionPlanner` validates ranges and replacement semantics. `CorrectionApplier` performs only a validated Android edit.
-
-## 53.4 Explicit Editing State Machine
-
-Prefer a typed state model over many independent mutable flags.
-
-```kotlin
-sealed interface EditingState {
-    data object Idle : EditingState
-    data class Tracking(val snapshot: TextSnapshot) : EditingState
-    data class Analyzing(val snapshot: TextSnapshot) : EditingState
-    data class Suggestions(
-        val snapshot: TextSnapshot,
-        val suggestions: List<GrammarSuggestion>
-    ) : EditingState
-}
-```
-
-The exact model may differ, but impossible states should be difficult to represent.
-
-## 53.5 TargetIdentity + TextIdentity
-
-Do not rely on generation alone.
-
-Track:
-
-```text
-TargetIdentity
+- nodeIdentity
 - packageName
-- windowId
-- node identity information
-
-TextIdentity
-- exact text
-- text hash
-- selection
+- windowIdentity if available
+- text
+- selectionStart
+- selectionEnd
 - generation
+- capturedAt
+- fieldClassification
+- appCompatibilityMode
 ```
 
-Before applying a correction, re-resolve the target and verify the current text again.
+Never apply an analysis result to a node unless the current field still matches the relevant snapshot/generation requirements.
 
-## 53.6 UTF-16 Offset Contract
-
-Android/Kotlin string positions use UTF-16 code units; Rust string offsets are commonly byte-based UTF-8 offsets. Never pass Rust byte offsets directly to Android.
-
-The FFI contract should expose Android-compatible offsets such as:
+## AnalysisRequest
 
 ```text
-startUtf16
-endUtf16
+AnalysisRequest
+- snapshot
+- language/dialect configuration
+- lint configuration version
+- dictionary version if applicable
+- document mode
+- request ID
 ```
 
-The Rust adapter owns the conversion.
+## HarperLint
 
-Mandatory tests:
+At minimum:
 
 ```text
-ASCII
-accented characters
-emoji
-emoji sequences
-CJK
-Arabic
-combining characters
-mixed scripts
+HarperLint
+- issueId
+- startUtf16
+- endUtf16
+- message
+- ruleId/ruleName if the selected core exposes stable identifying information
+- suggestions
 ```
 
-## 53.7 App Capability Model
-
-Do not classify an application simply as supported/unsupported.
-
-```kotlin
-data class AppCapabilities(
-    val canReadText: Boolean,
-    val canDetectChanges: Boolean,
-    val canSetText: Boolean,
-    val canSetSelection: Boolean,
-    val canGetCharacterBounds: Boolean,
-    val overlayWorks: Boolean
-)
-```
-
-Record observed capability separately from assumptions. Partial support is valid.
-
-## 53.8 CharacterLocationProvider
-
-Keep visual positioning behind an interface:
+## HarperSuggestion
 
 ```text
-CharacterLocationProvider
-├── Api36CharacterLocationProvider
-└── FallbackLocationProvider
+HarperSuggestion
+- suggestionId
+- displayText
+- operation
 ```
 
-Re-resolve the node before requesting character coordinates. If exact locations are unavailable, fall back to a field-level indicator instead of disabling grammar analysis.
-
-## 53.9 Read-Only Developer Mode
-
-Provide a mode that runs acquisition, analysis, and overlays but disables editing:
+Where operation is one of the supported edit forms, for example:
 
 ```text
-Accessibility → Harper → Suggestions → Overlay
-                                      ↘ no edit
+ReplaceWith(text)
+InsertAfter(text)
+Remove
 ```
 
-Use this first when evaluating a new target app.
+Do not reduce all suggestions to strings.
 
-## 53.10 Emergency Kill Switch
+## EditOperation
 
-Provide a global pause/disable mechanism that immediately stops:
+```text
+EditOperation
+- startUtf16
+- endUtf16
+- operation
+- expectedOriginalText
+- replacement/inserted text if applicable
+```
 
-- text acquisition
-- analysis
-- overlays
-- correction
-
-A temporary current-app pause is useful as well.
+This allows the UI to remain independent from the internal Harper suggestion enum.
 
 ---
 
-# 54. Accessibility Event and Back-Pressure Policy
+# 6. Unicode and Offset Rules
 
-## 54.1 Narrow Event Selection
+Android text APIs use UTF-16 indexing. Harper/Rust internals may operate using character or other indexing semantics depending on API.
 
-Do not use broad coverage such as `typeAllMask` unless a measured compatibility issue proves it necessary.
+The bridge must convert offsets correctly and centrally.
 
-Start with the narrowest useful set, typically:
+Do not scatter UTF-16 conversion logic across Android classes.
 
-```text
-TYPE_VIEW_FOCUSED
-TYPE_VIEW_TEXT_CHANGED
-TYPE_WINDOW_STATE_CHANGED
-```
+Required test cases include:
 
-Add other events only with a documented reason.
+- ASCII
+- accented Latin characters
+- combining marks
+- emoji
+- emoji sequences
+- supplementary Unicode code points
+- mixed scripts
+- replacement at start/middle/end
+- zero-length insertion
+- deletion
+- multiple edits in one text state
 
-## 54.2 Runtime Service Configuration
-
-Where appropriate, update `AccessibilityServiceInfo` at runtime when settings change, including:
-
-- package filters
-- event types
-- flags
-- notification timeout
-
-This allows unnecessary processing to be reduced when the user excludes apps or disables functionality.
-
-## 54.3 Notification Timeout
-
-Use service-level notification throttling as coarse back-pressure, then apply application-level filtering and cancellation.
+Example principle:
 
 ```text
-Android event throttling
-    ↓
-cheap filtering
-    ↓
-snapshot/text comparison
-    ↓
-debounce
-    ↓
-mapLatest / cancellation
-    ↓
-Harper
+Harper/core offset representation
+          |
+          v
+Rust adapter conversion
+          |
+          v
+UTF-16 Android offset
 ```
 
----
-
-# 55. Privacy Invariant Test Suite
-
-Privacy must be enforced by automated tests, not only documentation.
-
-Required assertions:
-
-```text
-password field   → Harper calls = 0
-OTP/PIN field    → Harper calls = 0
-blocked app      → Harper calls = 0
-service disabled → Harper calls = 0
-read-only mode   → correction calls = 0
-normal field     → Harper may be called
-```
-
-Use a fake `GrammarEngine` in Kotlin tests. Verify logs and diagnostics contain metadata only and never raw input.
+The conversion must be tested independently.
 
 ---
 
-# 56. Large-Text Processing Policy
+# 7. Performance Architecture
 
-Define bounded behavior for normal, large, and extremely large text fields.
+Harper is expected to behave like a real-time editor engine. The app must treat latency as a first-class feature.
 
-Do not choose arbitrary thresholds from a tutorial. Benchmark Harper on actual Android hardware and select practical limits.
+## Current critical issue
 
-Oversized text must degrade gracefully instead of causing typing stalls or unbounded memory use.
+The Kotlin repository currently has a Main-thread coroutine scope and calls the native `engine.lint(...)` from the flow transformation. `mapLatest` alone does **not** guarantee that CPU/native work executes off the main thread.
 
----
+This must be corrected first.
 
-# 57. No Clipboard Correction Fallback
-
-Do **not** implement copy/modify/paste as a general editing fallback.
-
-Clipboard automation creates privacy exposure, clipboard interference, race conditions, and unpredictable target-app behavior.
-
-Prefer supported accessibility editing actions. If reliable editing is unavailable, expose the target as read-only/limited.
-
----
-
-# 58. Native API / Schema Versioning
-
-Expose stable metadata from the Rust bridge:
-
-```text
-engineVersion()
-schemaVersion()
-capabilities()
-```
-
-At startup, verify that Kotlin and the native library agree on the expected schema. Fail gracefully on mismatch.
-
----
-
-# 59. Real-Pipeline Performance Measurement
-
-Measure the actual assistant path, not only app startup:
+## Required model
 
 ```text
 Accessibility event
-    → snapshot
-    → Harper start
-    → Harper finish
-    → overlay visible
+        |
+        v
+cheap filtering on Main
+        |
+        v
+snapshot creation
+        |
+        v
+background analysis scheduler
+        |
+        v
+Rust/Harper analysis
+        |
+        v
+result validation
+        |
+        v
+Main-thread UI update
 ```
 
-Store only timing/metadata in debug telemetry, for example:
+Do not perform heavyweight linting on Main.
 
-```text
-analysis_ms=73
-chars=128
-lint_count=2
-```
+## Cancellation rule
 
-Never record the sentence itself.
+Kotlin coroutine cancellation is not automatically equivalent to cancelling a synchronous Rust call already in progress.
 
-Use Macrobenchmark, Baseline Profiles, and Startup Profiles where they provide measurable benefit.
+Therefore:
+
+1. Make obsolete requests easy to discard.
+2. Use generation/request IDs.
+3. Ensure the latest text wins.
+4. Where practical, make the Rust boundary cancellation-aware.
+5. If true mid-lint cancellation cannot be provided by the core API, keep the call on a dedicated worker and discard its result when stale.
+
+Do not claim “cancelled” merely because `mapLatest` cancelled the Kotlin continuation.
+
+## Input-size limits
+
+Introduce a configurable/defensible maximum analysis size.
+
+The exact default must be chosen from measurement and upstream behavior rather than an arbitrary tiny number.
+
+For very large fields:
+
+- avoid repeated full-document analysis
+- consider truncation or a compatibility policy only when correct for the UX
+- expose metrics so the limit can be tuned
+
+Do not silently corrupt user text to improve performance.
+
+## Performance metrics
+
+Measure at least:
+
+- event rate per second
+- debounce-to-start delay
+- native lint duration
+- end-to-end analysis latency
+- overlay update latency
+- stale result percentage
+- correction success/failure rate
+- peak/steady memory where practical
+- analysis time by text length bucket
+
+Keep baseline numbers before optimization.
 
 ---
 
-# 60. Play Policy Release Gate
+# 8. Accessibility Event Architecture
 
-Accessibility policy review is a release blocker.
+Accessibility events are noisy. Not every event should trigger a lint request.
 
-Before production release, verify:
+The filtering path should distinguish:
 
-- the product purpose and accessibility use case are documented
-- `isAccessibilityTool` is truthful and appropriate
-- prominent disclosure exists where required
-- affirmative consent exists where required
-- Play Console accessibility declaration requirements are satisfied
-- only necessary accessibility capabilities are requested
-- the implementation does not perform prohibited autonomous actions
-- privacy documentation exactly matches implementation behavior
+- focus changes
+- actual text mutation
+- selection-only changes
+- cursor movement
+- IME/composition updates
+- password/sensitive fields
+- unsupported application/editor contexts
+- stale events from previously focused nodes
 
-Never add misleading classifications or manifest flags to improve approval chances.
+## Event processing rule
+
+Only schedule analysis when all required conditions are true, for example:
+
+```text
+Current node is relevant
+AND editable
+AND allowed by security policy
+AND allowed by app policy
+AND text changed meaningfully
+AND not currently in a protected composition state
+AND text size is acceptable
+```
+
+Do not use a blanket “every TYPE_VIEW_TEXT_CHANGED triggers a lint” strategy.
 
 ---
 
-# 61. Testing Strategy — No Full Keyboard
+# 9. IME Composition Must Be a Dedicated Concern
 
-The project does **not** need a full keyboard, custom IME, or polished in-app editor to validate Harper.
+Text composition is different from ordinary committed text.
 
-Use four levels:
+Many keyboards and editors build words in stages. The app must not aggressively rewrite composing text while the IME is still constructing it.
+
+Introduce an explicit composition-aware state such as:
 
 ```text
-Level 1 — Rust
-Direct Harper inputs and expected lints
-
-Level 2 — Kotlin
-Snapshots, UTF-16 mapping, scheduling, state machine, correction planning
-
-Level 3 — Minimal Android fixture
-Real accessibility nodes for service/integration tests
-
-Level 4 — Real apps
-Compatibility and UX testing
+StableText
+Composing
+CommitPending
+Committed
 ```
 
-The fixture is intentionally small and exists only to exercise Android accessibility behavior.
+The exact Android implementation should be based on what information the accessibility framework and target editor actually expose.
+
+Requirements:
+
+- detect likely composition changes where possible
+- avoid disruptive corrections during active composition
+- re-analyze after composition/commit
+- test with multiple keyboard/input methods and several editor apps
+
+Do not assume every editor behaves like a simple `EditText`.
 
 ---
 
-# 62. Revised First Implementation Slice
+# 10. Overlay Architecture
 
-Do not begin with the complete settings UI, keyboard, or production editor.
+The overlay should evolve from a simple notification into a real multi-lint suggestion surface.
 
-Start here:
+## Required UX
 
-```text
-Rust test input
-    ↓
-harper-core
-    ↓
-expected lint
-```
+When multiple lints are present, users should be able to inspect them without losing the context of the original text field.
 
-Then:
+A practical flow is:
 
 ```text
-Minimal Android fixture
-    ↓
-AccessibilityService
-    ↓
-TextSnapshot
-    ↓
-300 ms debounce
-    ↓
-UniFFI
-    ↓
-Rust harper-core
-    ↓
-Lint result
+small anchor / indicator
+        |
+        v
+lint card / suggestion panel
+        |
+        +--> issue message
+        +--> all suggestions
+        +--> dismiss
+        +--> navigate to next/previous issue
 ```
 
-Then:
+The UI must not assume one lint per field.
+
+## Multi-suggestion requirements
+
+For each lint:
+
+- show the rule/message clearly
+- show all supported suggestions
+- distinguish replacement/insertion/removal when useful
+- allow user selection
+- allow dismissing the lint
+- remain usable with multiple lints
+
+Do not silently show only the first suggestion.
+
+## Coordinate separation
+
+Keep these concepts separate:
 
 ```text
-Lint
- ↓
-Overlay
- ↓
-User action
- ↓
-Target re-resolution
- ↓
-Snapshot validation
- ↓
-ACTION_SET_TEXT
+Text coordinates
+    -> UTF-16 text offsets
+
+Accessibility/node coordinates
+    -> bounds in window/screen coordinates
+
+Overlay coordinates
+    -> actual overlay positioning space
 ```
 
-Only after this path is reliable should the agent expand UI polish or application coverage.
+Do not mix text offsets with screen geometry.
+
+Where supported, use node/window bounds APIs appropriate to the accessibility service and display/window context.
+
+The positioning component should own the conversion.
+
+## Overlay edge cases
+
+Test:
+
+- portrait/landscape changes
+- scrolling
+- multi-window
+- split-screen
+- display changes
+- IME visible/hidden
+- fields near screen edges
+- very small/large fields
+- multiple lints close together
+- overlay rotation/repositioning
+- accessibility focus changes
 
 ---
 
-# 63. Revised Agent Task Queue
+# 11. Correction Architecture
 
-Execute in order:
+Do not let the overlay directly manipulate accessibility nodes.
+
+Use:
 
 ```text
-A0  Policy + architecture gate
-A1  Android skeleton
-A2  Minimal AccessibilityService
-A3  Rust harper-core adapter
-A4  UniFFI bridge
-A5  InputProvider + InputSessionManager
-A6  TextSnapshot + TargetIdentity + UTF-16 contract
-A7  Event filtering + notification timeout + scheduler
-A8  Harper analysis pipeline
-A9  Editing state machine
-A10 CorrectionPlanner
-A11 CorrectionApplier + stale-result protection
-A12 OverlayManager
-A13 Protected-field/app policy
-A14 Privacy invariant tests
-A15 Read-only developer mode + kill switch
-A16 Capability model + compatibility matrix
-A17 CharacterLocationProvider
-A18 Large-text policy + performance instrumentation
-A19 Baseline/Startup Profiles + Macrobenchmark
-A20 Release/privacy/Play policy gate
+UI
+ -> EditOperation
+ -> CorrectionController
+ -> CorrectionStrategy
+ -> Accessibility node
 ```
 
-Each task must end with a measurable acceptance test. Do not jump ahead while A3–A11 are unstable.
+## Validation before applying
+
+Before every correction:
+
+1. Verify node is still valid/editable.
+2. Verify text still matches the analyzed state or expected original segment.
+3. Verify UTF-16 range is valid.
+4. Verify the requested operation is still applicable.
+5. Apply correction.
+6. Re-read/refresh the field when possible.
+7. Re-analyze resulting text.
+
+## `ACTION_SET_TEXT` rule
+
+`ACTION_SET_TEXT` is a useful baseline but can affect selection/cursor behavior and may not behave identically across every app.
+
+Therefore:
+
+```text
+CorrectionStrategy
+  ├─ Accessibility set-text strategy
+  ├─ App-specific compatibility strategy (only when justified)
+  └─ Unsupported/failure state
+```
+
+Do not add fragile clipboard or screen-scraping fallbacks just to increase the number of “supported” apps.
+
+## Selection preservation
+
+The preferred behavior is to preserve a logical caret/selection whenever possible.
+
+Because some accessibility set-text implementations move the cursor to the end, test and compensate where reliable and safe. Do not sacrifice correctness to pretend selection is preserved.
 
 ---
 
-# 64. Additional MVP Acceptance Criteria
+# 12. Security and Privacy
 
-- [ ] InputProvider abstraction exists
-- [ ] Accessibility is isolated from the grammar engine
-- [ ] InputSessionManager owns the editing session
-- [ ] TargetIdentity and TextIdentity are checked before edits
-- [ ] UTF-16 offsets are explicit and tested
-- [ ] CorrectionPlanner is separate from CorrectionApplier
-- [ ] editing state is explicit
-- [ ] event types are narrowly filtered
-- [ ] notification timeout is configured
-- [ ] app capabilities are represented
-- [ ] read-only mode exists
-- [ ] no clipboard fallback exists
-- [ ] privacy invariants are automated
-- [ ] large-text behavior is bounded
-- [ ] engine/schema compatibility is checked
-- [ ] no full keyboard or production editor was created solely for testing
+This is a system-wide typing assistant. Privacy must be stricter than for a normal editor.
+
+## Never analyze protected fields
+
+At minimum:
+
+- password fields
+- explicit sensitive/protected fields when reliably detectable
+
+Extend detection cautiously. Avoid broad heuristics that cause false positives in normal text fields.
+
+## App policy
+
+Maintain a configurable compatibility/policy layer for applications where accessibility text extraction or editing is unreliable or unsafe.
+
+Do not attempt to bypass an application's explicit security behavior.
+
+## Logging rules
+
+Never log:
+
+- raw typed text
+- passwords
+- suggestion contents derived from private text
+- full field contents
+
+Safe logging examples:
+
+```text
+package=com.example.app
+nodeChanged=true
+analysisDurationMs=23
+lintCount=2
+resultStale=false
+```
 
 ---
 
-# 65. Final Engineering Priority
+# 13. Configuration Architecture
 
-When this document leaves a decision open, prioritize in this order:
+Configuration must be centralized rather than scattered through UI and engine code.
+
+Model something similar to:
 
 ```text
-1. User privacy and safety
-2. No incorrect/stale edits
-3. Android and Google Play compliance
-4. Real-app compatibility
-5. Typing responsiveness
-6. Kotlin/Rust separation
-7. Maintainability
-8. Feature breadth
+HarperConfig
+- dialect
+- enabled/disabled lints where supported
+- ignored rules
+- document mode
+- dictionary settings
+- max input length
+- analysis debounce
+- app compatibility policy
+- privacy policy
 ```
 
-A visually impressive feature must not be prioritized above correctness, privacy, lifecycle safety, or policy compliance.
+## Configuration rule
 
-Keep Harper independently reusable. Android should remain an adapter around the grammar engine, not a fork of its language intelligence.
+The Rust engine and Android UI must not each maintain unrelated copies of configuration.
+
+Use a single persisted source of truth on Android and convert it into a versioned Rust configuration object.
+
+Consider a configuration version/hash so an analysis result can be associated with the configuration that produced it.
+
+---
+
+# 14. Dictionaries
+
+The architecture should support:
+
+- curated/default dictionary
+- user dictionary
+- future workspace/file-local/static concepts when relevant to the Android product
+
+The exact available Harper dictionary APIs must be confirmed against the selected `harper-core` version.
+
+Dictionary ownership should be explicit.
+
+The same effective dictionary configuration must be used consistently where the Harper API requires it for document/linter behavior.
+
+Do not recreate dictionary structures for every keystroke.
+
+---
+
+# 15. Lint Lifecycle
+
+Use an explicit analysis lifecycle rather than implicit booleans.
+
+Recommended state machine:
+
+```text
+Idle
+  -> Scheduled
+  -> Analyzing
+  -> Result
+
+Result
+  -> Applied
+  -> Dismissed
+  -> Stale
+  -> ReplacedByNewAnalysis
+
+Analyzing
+  -> CancelRequested
+  -> Stale
+```
+
+The exact state names may differ, but the semantics must be explicit.
+
+This prevents UI bugs where a result remains visible after its source text has changed.
+
+---
+
+# 16. Stable Issue Identity
+
+Never identify a lint only by:
+
+```text
+index = 0
+index = 1
+```
+
+A user selecting suggestion 2 for issue A must still act on issue A even if the lints are re-ordered.
+
+Build a stable issue ID from the analysis/request context plus deterministic issue characteristics where appropriate.
+
+The ID does not have to survive arbitrary future text edits forever; it only needs to be stable enough for the current analysis/UI lifecycle and safely invalidated when the source changes.
+
+---
+
+# 17. Phase-by-Phase Implementation Plan
+
+Each phase is intentionally small and should end with a working, testable state.
+
+---
+
+## Phase 0 — Baseline and Inventory
+
+### Goal
+Freeze the current behavior and understand exactly what the MVP does.
+
+### Tasks
+
+- Record current Git status and baseline commit.
+- Inventory all Kotlin/Rust files involved in accessibility, analysis, FFI, overlay, correction, and configuration.
+- Record exact resolved `harper-core` version from `Cargo.lock`.
+- Record Rust/Android/NDK/UniFFI versions actually used.
+- Verify current build on every intended Android architecture.
+- Run existing tests.
+- Capture baseline latency for short/medium/long text.
+- Record known incompatible apps from `COMPATIBILITY.md`.
+- Document current correction behavior.
+
+### Acceptance gate
+
+Build succeeds, tests pass, and baseline metrics/build versions are documented.
+
+---
+
+## Phase 1 — Move Native Linting Off the Main Thread
+
+### Goal
+Remove the current risk that `engine.lint(...)` runs on Main.
+
+### Tasks
+
+- Introduce dedicated background analysis execution.
+- Keep only cheap event processing/snapshot creation on Main.
+- Ensure results return to Main before UI mutation.
+- Add a regression test or instrumentation check preventing accidental Main-thread linting.
+
+### Acceptance gate
+
+Typing remains responsive while analysis runs; no heavy lint call executes on the Android main thread.
+
+---
+
+## Phase 2 — Introduce a Persistent Rust Harper Engine
+
+### Goal
+Stop rebuilding expensive Harper structures on every lint call.
+
+### Tasks
+
+- Replace stateless `HarperEngine {}` with persistent engine state.
+- Initialize dictionary once per engine/session.
+- Initialize or reuse lint group state as appropriate.
+- Keep configuration state inside the engine where appropriate.
+- Ensure ownership/lifetimes are correct.
+- Verify thread-safety rather than assuming it.
+
+### Important constraint
+
+Do not parallelize engine access merely because it “looks safe.” Verify actual `Send`/`Sync` guarantees of the chosen objects and measure before enabling multi-threaded use.
+
+A single dedicated analysis worker is a valid initial design.
+
+### Acceptance gate
+
+Repeated lint calls reuse core state and performance improves or stays safely equivalent without regressions.
+
+---
+
+## Phase 3 — Build the Stable Rust/UniFFI Compatibility Layer
+
+### Goal
+Create the durable boundary between Android and `harper-core`.
+
+### Tasks
+
+Create Android-facing types such as:
+
+```text
+HarperConfig
+HarperLint
+HarperSuggestion
+EditOperation
+AnalysisMetadata
+HarperError
+```
+
+Keep `harper-core` types behind the adapter where practical.
+
+Centralize:
+
+- UTF-16 conversion
+- suggestion conversion
+- core error mapping
+- configuration translation
+- document creation
+- lint invocation
+
+### Acceptance gate
+
+Android no longer needs to know how `harper-core` internally represents every lint/suggestion object.
+
+---
+
+## Phase 4 — Preserve All Supported Suggestion Semantics
+
+### Goal
+Stop throwing away valid Harper suggestions.
+
+### Tasks
+
+- Inspect the exact `Suggestion` enum in the resolved `harper-core` version.
+- Map every currently supported variant.
+- Represent operations explicitly.
+- Add round-trip/unit tests for each operation.
+- Verify empty/zero-length insertion behavior.
+- Verify deletion behavior.
+
+### Acceptance gate
+
+No supported core suggestion is silently dropped by the Android bridge.
+
+---
+
+## Phase 5 — Add Real Dialect Support
+
+### Goal
+Remove the hard-coded American dialect.
+
+### Tasks
+
+- Define supported dialect enum in Android-facing API.
+- Map it to exact `harper-core` dialect values.
+- Persist user selection.
+- Rebuild/update relevant engine configuration safely when dialect changes.
+- Tie result/config version to analysis request.
+- Add tests for at least two dialects if supported by the selected version.
+
+### Acceptance gate
+
+Changing the selected dialect changes lint behavior deterministically.
+
+---
+
+## Phase 6 — Add Lint Configuration and Ignored Rules
+
+### Goal
+Expose supported Harper lint controls rather than treating curated lints as immutable.
+
+### Tasks
+
+- Inspect exact configuration APIs available in the resolved core version.
+- Add a Rust adapter configuration model.
+- Support enabling/disabling relevant lint rules.
+- Support ignored rules.
+- Persist settings on Android.
+- Add configuration version/hash to analysis requests.
+- Ensure configuration changes invalidate stale results.
+
+### Acceptance gate
+
+A configured rule can be turned off/ignored and the result actually changes accordingly.
+
+---
+
+## Phase 7 — Add User Dictionary Support
+
+### Goal
+Allow users to whitelist words that are valid for them.
+
+### Tasks
+
+- Inspect current core dictionary APIs.
+- Build a persistent user-dictionary store.
+- Convert/store entries safely.
+- Integrate the effective dictionary into the Harper engine.
+- Avoid rebuilding the dictionary for every keystroke.
+- Add add/remove tests.
+
+### Acceptance gate
+
+A user-added word stops producing the intended spelling complaint after configuration refresh.
+
+---
+
+## Phase 8 — Document/Parser Abstraction
+
+### Goal
+Stop baking `new_plain_english(...)` into the public engine contract.
+
+### Tasks
+
+Introduce a document mode abstraction such as:
+
+```text
+PlainText
+Markdown
+Other supported structured modes
+```
+
+Only implement modes actually supported and useful for the Android product.
+
+Map each mode to the correct Harper parser/document API for the selected version.
+
+### Constraint
+
+Do not implement Markdown/code parsing merely because the enum exists. Use current upstream behavior and validate the actual Android use cases.
+
+### Acceptance gate
+
+The engine can make an explicit document-mode decision and the mode is test-covered.
+
+---
+
+## Phase 9 — Correct Analysis Scheduling and Stale-Result Protection
+
+### Goal
+Make real-time analysis deterministic under rapid typing.
+
+### Tasks
+
+Implement:
+
+- debounce
+- request IDs
+- node identity checks
+- generation counters
+- stale-result rejection
+- configuration-version checks
+- bounded queueing
+- cancellation/stale-result metrics
+
+Use `mapLatest` or equivalent only as part of the design, not as the entire cancellation story.
+
+### Acceptance gate
+
+Rapidly typing/replacing text cannot cause an older lint result to overwrite a newer state.
+
+---
+
+## Phase 10 — Add Explicit Accessibility Event Classification
+
+### Goal
+Reduce unnecessary analysis and prevent incorrect triggers.
+
+### Tasks
+
+Create an event classifier for:
+
+- focus
+- text changed
+- selection changed
+- cursor-only changes
+- composition-related events
+- node replacement/recycling
+- unsupported app behavior
+
+Track the current editable node identity robustly.
+
+### Acceptance gate
+
+Selection movement alone does not create unnecessary full lint runs; actual text edits still do.
+
+---
+
+## Phase 11 — IME/Composition Handling
+
+### Goal
+Prevent the assistant from fighting the keyboard while text is being composed.
+
+### Tasks
+
+- Identify composition information available through Android APIs and observed apps.
+- Introduce composition-aware state.
+- Delay/reduce disruptive corrections during composition.
+- Re-run analysis on commit/stable text.
+- Test with multiple keyboard/input methods and editors.
+
+### Acceptance gate
+
+Typing and composing words feels natural and corrections do not interfere with active composition.
+
+---
+
+## Phase 12 — Multi-Lint / Full Suggestion Overlay UI
+
+### Goal
+Build a usable UI for every lint and all its suggestions.
+
+### Tasks
+
+- Display multiple lints.
+- Present message/details for selected lint.
+- Present every supported suggestion.
+- Handle insert/replace/remove visually where useful.
+- Allow dismiss.
+- Allow navigation among issues.
+- Prevent stale overlay actions from modifying new text.
+- Use stable issue IDs.
+
+### Acceptance gate
+
+A field containing multiple issues can be reviewed and each applicable suggestion can be selected safely.
+
+---
+
+## Phase 13 — Modern Overlay Positioning and Geometry
+
+### Goal
+Make the overlay robust across real Android window/display layouts.
+
+### Tasks
+
+- Isolate overlay positioning in a dedicated component.
+- Use appropriate accessibility overlay/window APIs.
+- Use node/window bounds correctly.
+- Separate text offsets from geometric coordinates.
+- Handle display metrics and orientation changes.
+- Reposition after scrolling and focus changes.
+- Handle IME-induced layout movement.
+
+### Acceptance gate
+
+Overlay stays near the relevant text field across common phone/window configurations without blocking normal interaction.
+
+---
+
+## Phase 14 — Correction Strategy and Selection Safety
+
+### Goal
+Make applying suggestions safe and compatible.
+
+### Tasks
+
+- Create correction strategy abstraction.
+- Implement accessibility `ACTION_SET_TEXT` path.
+- Validate current text before applying.
+- Validate range.
+- Apply explicit edit operation.
+- Re-read node after edit where possible.
+- Re-analyze after correction.
+- Test caret/selection behavior.
+- Record app-specific failure patterns.
+
+### Acceptance gate
+
+A stale suggestion cannot corrupt current text, and successful correction results in expected final text in supported apps.
+
+---
+
+## Phase 15 — App Compatibility Hardening
+
+### Goal
+Make compatibility policy explicit instead of relying on accidental behavior.
+
+### Tasks
+
+- Maintain allow/deny/limited support policy.
+- Test standard Android text fields.
+- Test major browsers/editor-style apps as permitted.
+- Test apps with custom editors.
+- Document expected failures.
+- Keep conservative blocks for apps where accessibility mutation is unsafe/unreliable.
+
+### Constraint
+
+Do not add per-app hacks until generic behavior is verified and the limitation is demonstrated.
+
+### Acceptance gate
+
+Each supported app category has a documented reason for its support level.
+
+---
+
+## Phase 16 — Input Bounds and Performance Optimization
+
+### Goal
+Optimize after correctness is stable.
+
+### Tasks
+
+- Add input-size limits.
+- Benchmark small/medium/large text.
+- Profile dictionary/linter initialization.
+- Profile allocation/copy overhead.
+- Reduce Kotlin/Rust string copying only where measured.
+- Reuse buffers/objects where safe.
+- Evaluate persistent worker vs parallel analysis.
+- Measure effect of debounce changes.
+
+### Future-ready design
+
+Keep interfaces compatible with incremental analysis, but do not implement incremental parsing until profiling proves it worthwhile and the upstream APIs make it practical.
+
+### Acceptance gate
+
+Performance targets are documented and met for the chosen device/test matrix.
+
+---
+
+## Phase 17 — Security and Privacy Hardening
+
+### Goal
+Make system-wide operation privacy-safe by default.
+
+### Tasks
+
+- Expand protected field detection where reliably supported.
+- Confirm password fields are never analyzed.
+- Audit logs.
+- Audit crash/error reporting for text leakage.
+- Audit storage for user dictionary/configuration.
+- Verify sensitive content is not persisted unintentionally.
+- Review overlay accessibility and tapjacking-related concerns.
+- Review package/application policies.
+
+### Acceptance gate
+
+No known raw user text/password leakage remains in normal logs or persistent storage paths.
+
+---
+
+## Phase 18 — Full Automated Test Matrix
+
+### Goal
+Turn the project into a regression-resistant system.
+
+### Rust tests
+
+- UTF-16 conversion
+- suggestion mapping
+- replacement
+- insertion
+- deletion
+- dictionary behavior
+- dialect behavior
+- lint configuration
+- ignored rules
+- document modes
+- configuration invalidation
+- error mapping
+
+### Kotlin tests
+
+- debounce
+- request generation
+- stale-result rejection
+- event classification
+- protected-field detection
+- app policy
+- correction validation
+- overlay state machine
+
+### Instrumentation tests
+
+- editable node tracking
+- focus changes
+- actual typing
+- selection changes
+- scrolling
+- keyboard visibility
+- orientation
+- overlay interaction
+- correction
+
+### Acceptance gate
+
+All automated suites pass in CI and critical functionality has device-level coverage.
+
+---
+
+## Phase 19 — Build/CI Matrix and Release Hardening
+
+### Goal
+Make the implementation reproducible and maintainable.
+
+### Tasks
+
+- Lock dependency versions appropriately.
+- Verify exact `harper-core` compatibility on every upgrade.
+- Build all intended Android ABIs.
+- Verify UniFFI generated bindings are reproducible.
+- Add Rust formatting/lint checks.
+- Add Kotlin formatting/lint checks.
+- Run unit/instrumentation tests in CI.
+- Run performance smoke tests.
+- Generate release notes for core-version changes.
+- Document rollback procedure for a bad Harper core upgrade.
+
+### Acceptance gate
+
+A clean checkout can reproduce the documented release artifact using documented toolchain versions.
+
+---
+
+# 18. Configuration/UI Roadmap
+
+Do not build the full settings UI before the engine contracts are stable.
+
+A practical order is:
+
+```text
+Phase 3-7 engine capabilities
+        |
+        v
+configuration persistence
+        |
+        v
+settings UI
+```
+
+Potential settings:
+
+- dialect
+- spelling/grammar toggles
+- ignored rules
+- user dictionary
+- analysis debounce
+- protected/supported apps
+- overlay behavior
+- accessibility compatibility mode
+
+Keep advanced controls understandable to normal users. Internal rule identifiers should not leak into the UI without human-readable labels.
+
+---
+
+# 19. Harper Version Management
+
+This project must be conservative about `harper-core` upgrades.
+
+For every upgrade:
+
+1. Record old and new resolved versions.
+2. Read release notes/source changes.
+3. Inspect breaking API differences.
+4. Inspect `Suggestion` changes.
+5. Inspect dictionary/configuration changes.
+6. Re-run all Rust adapter tests.
+7. Re-run Android instrumentation tests.
+8. Re-run performance benchmarks.
+9. Verify all intended Android ABIs.
+10. Keep compatibility code localized.
+
+Never upgrade solely because a newer version number exists.
+
+When documentation and registry metadata disagree, trust the actual resolved dependency and source used by the build, then verify the upstream state at implementation time.
+
+---
+
+# 20. Recommended Error Model
+
+Do not leak opaque Rust errors directly into UI.
+
+Map errors into stable categories such as:
+
+```text
+InvalidInput
+UnsupportedConfiguration
+EngineInitializationFailed
+AnalysisFailed
+StaleRequest
+UnsupportedOperation
+CorrectionFailed
+DictionaryError
+InternalError
+```
+
+UI should choose whether to show, log, retry, or silently ignore each category.
+
+For expected transient/stale cases, avoid scary user-facing errors.
+
+---
+
+# 21. Memory and Lifecycle Rules
+
+Accessibility services may live for long periods.
+
+Avoid:
+
+- unbounded cached snapshots
+- unbounded lint history
+- per-keystroke object retention
+- duplicate dictionaries
+- leaked accessibility nodes/context references
+- overlay references surviving service teardown
+
+On service shutdown:
+
+- stop analysis work
+- release overlay
+- release/cancel observers
+- cleanly drop engine/session state as required
+
+---
+
+# 22. Concurrency Rules
+
+Start conservative.
+
+Preferred first design:
+
+```text
+one analysis worker
+      |
+      v
+persistent Harper engine
+```
+
+Then measure.
+
+Only introduce parallel workers if:
+
+- engine objects are verified safe for concurrent use,
+- the actual Android workload benefits,
+- memory cost is acceptable,
+- and stale-result management remains deterministic.
+
+Do not create a pool simply because the device has many CPU cores.
+
+---
+
+# 23. What NOT to Do
+
+Do not:
+
+- reimplement Harper grammar rules in Kotlin
+- silently ignore unsupported suggestion kinds
+- initialize a new dictionary/linter for every keystroke
+- run full linting on Main
+- assume coroutine cancellation stops synchronous native work
+- treat every accessibility event as a text mutation
+- fight IME composition
+- apply stale suggestions
+- identify issues only by list index
+- mix UTF-16 offsets with screen coordinates
+- assume `ACTION_SET_TEXT` works identically in every app
+- use clipboard/screenshot/OCR as the normal correction mechanism
+- log raw typed content
+- create unbounded memory caches
+- expose every `harper-core` internal type through FFI
+- upgrade Harper blindly
+- optimize before measuring
+- implement huge refactors in one phase
+- add app-specific hacks before proving a general Android approach fails
+
+---
+
+# 24. Agent Workflow for Every Phase
+
+For each phase, the coding agent must follow this sequence:
+
+### A. Inspect
+
+- Read current code.
+- Read relevant tests.
+- Read relevant upstream Harper docs/source.
+- Confirm the exact API/version in use.
+
+### B. Design
+
+- State the minimal change.
+- State impacted modules.
+- State compatibility risks.
+- State test plan.
+
+### C. Implement
+
+- Keep change focused.
+- Preserve existing behavior unless the phase intentionally changes it.
+- Update types/contracts together.
+
+### D. Validate
+
+Run the smallest useful test first, then the broader suite.
+
+### E. Report
+
+The agent should report:
+
+```text
+Phase:
+Status:
+Files changed:
+Behavior added:
+Tests run:
+Performance impact:
+Compatibility impact:
+Known limitations:
+Next gate:
+```
+
+Do not report a phase complete if its acceptance gate is not satisfied.
+
+---
+
+# 25. Recommended Implementation Order at a Glance
+
+```text
+0  Baseline/inventory
+1  Background analysis
+2  Persistent engine
+3  Stable FFI/domain layer
+4  All suggestion semantics
+5  Dialects
+6  Lint config/ignored rules
+7  User dictionary
+8  Document/parser abstraction
+9  Scheduling + stale protection
+10 Event classification
+11 IME composition
+12 Multi-lint suggestion UI
+13 Overlay geometry
+14 Correction strategy
+15 App compatibility
+16 Performance/input bounds
+17 Security/privacy
+18 Full tests
+19 CI/release hardening
+```
+
+This order deliberately puts correctness and architecture before polish.
+
+---
+
+# 26. Definition of Done
+
+The project is considered “full integration complete” when all of the following are true:
+
+## Harper core
+
+- [ ] Real `harper-core` is used.
+- [ ] Curated linting is used.
+- [ ] Dictionary state is reused appropriately.
+- [ ] Dialect is configurable where supported.
+- [ ] Lint configuration/ignored rules are supported where available.
+- [ ] User dictionary is supported where available.
+- [ ] Document/parser mode is explicit.
+- [ ] All supported suggestion kinds are preserved.
+
+## FFI
+
+- [ ] Stable Android-facing models exist.
+- [ ] UTF-16 conversion is centralized and tested.
+- [ ] Harper internals are isolated behind the compatibility layer.
+- [ ] Errors map to stable categories.
+
+## Performance
+
+- [ ] Native linting never blocks Main.
+- [ ] Dictionary/linter state is reused.
+- [ ] Debounce is configurable and tested.
+- [ ] Stale analysis cannot overwrite newer text.
+- [ ] Performance benchmarks exist.
+- [ ] Input bounds exist.
+- [ ] Cancellation behavior is accurately documented.
+
+## Accessibility
+
+- [ ] Event classification distinguishes real edits from noise.
+- [ ] Node identity/generation checks exist.
+- [ ] Password/sensitive fields are protected.
+- [ ] IME composition is handled safely.
+- [ ] App compatibility policy is explicit.
+
+## UI
+
+- [ ] Multiple lints can be displayed.
+- [ ] All suggestions can be displayed.
+- [ ] Suggestions can be selected.
+- [ ] Issue dismissal/navigation exists.
+- [ ] Stable issue IDs are used.
+- [ ] Overlay positioning is robust.
+- [ ] UI actions reject stale results.
+
+## Correction
+
+- [ ] Correction operations are explicit.
+- [ ] Text/range validation occurs before mutation.
+- [ ] Selection/cursor behavior is tested.
+- [ ] Correction is revalidated/reanalyzed afterward.
+- [ ] No fragile clipboard/screen-scraping fallback is required for the normal path.
+
+## Security
+
+- [ ] No raw text is logged.
+- [ ] Sensitive fields are protected.
+- [ ] Persistent storage is reviewed.
+- [ ] Overlay lifecycle is safe.
+
+## Quality
+
+- [ ] Rust tests pass.
+- [ ] Kotlin tests pass.
+- [ ] Instrumentation tests pass.
+- [ ] Device compatibility is documented.
+- [ ] CI is reproducible.
+- [ ] Harper version upgrades are controlled.
+
+---
+
+# 27. Final Architectural Principle
+
+The Android application should be:
+
+> **A high-quality Android host for the actual Harper engine, not a Harper clone.**
+
+That means:
+
+```text
+harper-core owns language intelligence
+
+Android owns:
+- accessibility integration
+- privacy/security policy
+- scheduling
+- lifecycle
+- overlay UX
+- correction strategy
+- persistence
+- device/app compatibility
+
+The Rust compatibility layer connects them cleanly.
+```
+
+If a feature can be implemented correctly by using Harper's existing core capability, prefer that over writing parallel language logic in Kotlin.
+
+If a feature does not exist in the selected `harper-core` version, document the limitation explicitly rather than pretending it is supported.
+
+---
+
+# 28. Upstream/Reference Sources to Verify During Implementation
+
+The agent should consult the live upstream sources before making version-sensitive decisions.
+
+- Harper main repository: https://github.com/elijah-potter/harper
+- Harper core crate source/documentation: https://docs.rs/harper-core/
+- Harper language-server/configuration documentation: https://writewithharper.com/docs/integrations/language-server
+- Android `AccessibilityService`: https://developer.android.com/reference/android/accessibilityservice/AccessibilityService
+- Android `AccessibilityNodeInfo.ACTION_SET_TEXT`: https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo
+
+For every implementation task, prefer current upstream source/docs over assumptions from this document when APIs have changed.
+
+---
+
+# 29. Final Agent Instruction
+
+Do not treat this guide as permission to skip investigation.
+
+For every phase:
+
+1. inspect the current repository;
+2. inspect the exact resolved Harper version;
+3. verify current upstream APIs when version-sensitive;
+4. implement the smallest complete change;
+5. write/update tests immediately;
+6. validate on the actual Android build/test matrix available;
+7. measure performance when the phase affects performance;
+8. document deviations from this guide;
+9. stop at the phase gate if the acceptance criteria are not met.
+
+The implementation should converge toward a robust, privacy-first, real-time Android editor assistant that maximizes use of Harper's actual language engine while keeping Android-specific integration concerns cleanly separated.

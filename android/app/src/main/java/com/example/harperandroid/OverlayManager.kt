@@ -15,7 +15,7 @@ import android.widget.TextView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import uniffi.harper_android.LintResult
+import uniffi.harper_android.HarperLint
 
 class OverlayManager(
     private val context: Context,
@@ -28,7 +28,7 @@ class OverlayManager(
     fun updateOverlay(
         node: AccessibilityNodeInfo,
         snapshot: TextSnapshot,
-        lints: List<LintResult>
+        lints: List<HarperLint>
     ) {
         scope.launch(Dispatchers.Main) {
             removeOverlay()
@@ -45,7 +45,7 @@ class OverlayManager(
                 
                 // Text
                 val textView = TextView(context).apply {
-                    text = "${lint.message}\nSuggestion: $suggestion"
+                    text = "${lint.message}\nSuggestion: ${suggestion.displayText}"
                     setTextColor(0xFF000000.toInt())
                     setPadding(0, 0, 16, 0)
                 }

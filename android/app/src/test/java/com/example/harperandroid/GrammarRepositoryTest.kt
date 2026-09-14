@@ -37,8 +37,8 @@ class GrammarRepositoryTest {
     fun testRapidTypingCancelsStaleAnalysis() = runTest {
         // We use the real HarperEngine over FFI
         val engine = HarperEngine.create()
-        // Pass backgroundScope so shareIn gets cancelled at the end of runTest
-        val repository = GrammarRepository(backgroundScope, engine)
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val repository = GrammarRepository(scope = backgroundScope, engine = engine, backgroundDispatcher = testDispatcher)
 
         val results = mutableListOf<AnalysisResult>()
         val job = backgroundScope.launch(kotlinx.coroutines.Dispatchers.Unconfined) {
@@ -70,6 +70,6 @@ class GrammarRepositoryTest {
         
         // Verify grammar rule fired
         assertTrue(finalResult.lints.isNotEmpty())
-        assertTrue(finalResult.lints[0].suggestions.contains("goes"))
+        assertTrue(finalResult.lints[0].suggestions.any { it.displayText.contains("goes") })
     }
 }

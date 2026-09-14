@@ -3,7 +3,9 @@ package com.example.harperandroid
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
-import uniffi.harper_android.LintResult
+import uniffi.harper_android.HarperLint
+import uniffi.harper_android.HarperSuggestion
+import uniffi.harper_android.EditOperation
 
 class CorrectionApplier {
 
@@ -14,8 +16,8 @@ class CorrectionApplier {
     fun applyCorrection(
         node: AccessibilityNodeInfo,
         snapshot: TextSnapshot,
-        lint: LintResult,
-        suggestion: String
+        lint: HarperLint,
+        suggestion: HarperSuggestion
     ): Boolean {
         if (!node.isEditable) {
             Log.w("Harper", "Cannot apply correction: Node is not editable.")
@@ -36,7 +38,17 @@ class CorrectionApplier {
             return false
         }
 
-        val newText = currentText.substring(0, start) + suggestion + currentText.substring(end)
+        val newText = when (val op = suggestion.operation) {
+            is EditOperation.ReplaceWith -> {
+                currentText.substring(0, start) + op.replacement + currentText.substring(end)
+            }
+            is EditOperation.InsertAfter -> {
+                currentText.substring(0, end) + op.insertion + currentText.substring(end)
+            }
+            is EditOperation.Remove -> {
+                currentText.substring(0, start) + currentText.substring(end)
+            }
+        }
 
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
@@ -44,7 +56,7 @@ class CorrectionApplier {
 
         val success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         if (success) {
-            Log.d("Harper", "Successfully applied correction: '$suggestion'")
+            Log.d("Harper", "Successfully applied correction: '${suggestion.displayText}'")
         } else {
             Log.e("Harper", "Failed to perform ACTION_SET_TEXT")
         }
