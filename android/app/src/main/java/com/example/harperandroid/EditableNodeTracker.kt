@@ -35,8 +35,9 @@ class EditableNodeTracker(
 
     private fun checkNode(node: AccessibilityNodeInfo, event: AccessibilityEvent) {
         val packageName = node.packageName?.toString() ?: ""
+        val supportLevel = appPolicy.getSupportLevel(packageName)
 
-        if (!appPolicy.isAllowed(packageName) || ProtectedFieldDetector.isSensitive(node)) {
+        if (supportLevel == AppPolicy.SupportLevel.DENIED || supportLevel == AppPolicy.SupportLevel.LIMITED || ProtectedFieldDetector.isSensitive(node)) {
             currentNode = null
             scope.launch {
                 grammarRepository.submitSnapshot(TextSnapshot("", NodeIdentity(-1, ""), "", null, null, generationCounter.incrementAndGet(), SystemClock.elapsedRealtime()))

@@ -1,21 +1,36 @@
-package com.example.harperandroid
+﻿package com.example.harperandroid
 
 class AppPolicy {
-    private val blocklist = mutableSetOf(
-        "com.android.chrome", // Example blocked apps for MVP
-        "com.google.android.inputmethod.latin"
+    enum class SupportLevel {
+        FULL,
+        LIMITED,
+        DENIED
+    }
+
+    private val customPolicies = mutableMapOf<String, SupportLevel>()
+
+    private val defaultBlocklist = setOf(
+        "com.android.chrome", // Browsers / WebViews
+        "org.mozilla.firefox",
+        "com.google.android.inputmethod.latin", // IMEs
+        "com.touchtype.swiftkey",
+        "com.google.android.apps.docs", // Complex Editors
+        "com.microsoft.office.word",
+        "notion.id",
+        "com.termux" // Terminals
     )
 
+    fun getSupportLevel(packageName: String): SupportLevel {
+        customPolicies[packageName]?.let { return it }
+        if (defaultBlocklist.contains(packageName)) return SupportLevel.DENIED
+        return SupportLevel.FULL
+    }
+
     fun isAllowed(packageName: String): Boolean {
-        // MVP: Blocklist mode
-        return !blocklist.contains(packageName)
+        return getSupportLevel(packageName) == SupportLevel.FULL
     }
 
-    fun blockApp(packageName: String) {
-        blocklist.add(packageName)
-    }
-
-    fun allowApp(packageName: String) {
-        blocklist.remove(packageName)
+    fun setPolicy(packageName: String, level: SupportLevel) {
+        customPolicies[packageName] = level
     }
 }
