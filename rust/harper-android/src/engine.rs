@@ -1,11 +1,10 @@
 use crate::compatibility::{convert_utf16_offsets, map_suggestion};
-use crate::models::{AnalysisMetadata, EditOperation, HarperConfig, HarperLint, HarperSuggestion};
+use crate::models::{HarperConfig, HarperLint, DocumentMode};
 use harper_core::linting::{LintGroup, Linter};
-use harper_core::spell::{FstDictionary, MergedDictionary, MutableDictionary, Dictionary};
-use harper_core::{Document, DictWordMetadata};
+use harper_core::spell::{FstDictionary, MergedDictionary, MutableDictionary};
+use harper_core::{DictWordMetadata, Document};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 #[derive(uniffi::Object)]
 pub struct HarperEngine {
@@ -13,6 +12,7 @@ pub struct HarperEngine {
     active_dict: Mutex<Arc<MergedDictionary>>,
     linter: Mutex<LintGroup>,
     config_version: AtomicU32,
+    document_mode: Mutex<DocumentMode>,
 }
 
 #[uniffi::export]
@@ -22,18 +22,19 @@ impl HarperEngine {
         let base_dict = FstDictionary::curated();
         let mut merged = MergedDictionary::new();
         merged.add_dictionary(base_dict.clone());
-        
+
         let merged_arc = Arc::new(merged);
-        
+
         let linter = Mutex::new(LintGroup::new_curated(
             merged_arc.clone(),
             harper_core::Dialect::American,
         ));
-        Self { 
-            base_dict, 
-            active_dict: Mutex::new(merged_arc), 
-            linter, 
-            config_version: AtomicU32::new(0) 
+        Self {
+            base_dict,
+            active_dict: Mutex::new(merged_arc),
+            linter,
+            config_version: AtomicU32::new(0),
+            document_mode: Mutex::new(DocumentMode::PlainEnglish),
         }
     }
 
@@ -57,9 +58,10 @@ impl HarperEngine {
             new_linter.config.set_rule_enabled(&rule, false);
         }
         *linter_guard = new_linter;
-        
+
         *self.active_dict.lock().unwrap() = merged_arc;
-        
+        *self.document_mode.lock().unwrap() = config.document_mode;
+
         self.config_version.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -81,7 +83,13 @@ impl HarperEngine {
 
     pub fn lint(&self, text: String, _language: String) -> Vec<HarperLint> {
         let dict = self.active_dict.lock().unwrap().clone();
-        let doc = Document::new_plain_english(&text, &*dict);
+        let mode = *self.document_mode.lock().unwrap();
+        
+        let doc = match mode {
+            DocumentMode::PlainEnglish => Document::new_plain_english(&text, &*dict),
+            DocumentMode::Markdown => Document::new_markdown_default(&text, &*dict),
+        };
+
         let mut linter_guard = self.linter.lock().unwrap();
         let lints = linter_guard.lint(&doc);
         drop(linter_guard);
@@ -119,35 +127,48 @@ mod tests {
     #[test]
     fn test_dialect_change() {
         let engine = HarperEngine::create();
-        
+
         // "color" is correct in American
         let lints_american = engine.lint("The color is nice".to_string(), "".to_string());
-        
+        assert!(
+            lints_american.is_empty(),
+            "color should NOT be flagged in American"
+        );
+
         // "colour" is incorrect in American
         let lints_american_2 = engine.lint("The colour is nice".to_string(), "".to_string());
-        assert!(!lints_american_2.is_empty(), "colour should be flagged in American");
+        assert!(
+            !lints_american_2.is_empty(),
+            "colour should be flagged in American"
+        );
 
         // Change to British
         engine.update_config(HarperConfig {
             dialect: HarperDialect::British,
-            document_mode: "plain_english".to_string(),
+            document_mode: DocumentMode::PlainEnglish,
             disabled_rules: vec![],
             user_dictionary: vec![],
         });
 
         // "colour" is correct in British
         let lints_british = engine.lint("The colour is nice".to_string(), "".to_string());
-        assert!(lints_british.is_empty(), "colour should NOT be flagged in British");
-        
+        assert!(
+            lints_british.is_empty(),
+            "colour should NOT be flagged in British"
+        );
+
         // "color" is incorrect in British
         let lints_british_2 = engine.lint("The color is nice".to_string(), "".to_string());
-        assert!(!lints_british_2.is_empty(), "color should be flagged in British");
+        assert!(
+            !lints_british_2.is_empty(),
+            "color should be flagged in British"
+        );
     }
 
     #[test]
     fn test_disable_rule() {
         let engine = HarperEngine::create();
-        
+
         let text = "This is a testt.".to_string(); // "testt" is a spelling error
 
         let lints = engine.lint(text.clone(), "".to_string());
@@ -156,13 +177,16 @@ mod tests {
         // Disable spelling
         engine.update_config(HarperConfig {
             dialect: HarperDialect::American,
-            document_mode: "plain_english".to_string(),
+            document_mode: DocumentMode::PlainEnglish,
             disabled_rules: vec!["SpellCheck".to_string()],
             user_dictionary: vec![],
         });
 
         let lints_disabled = engine.lint(text, "".to_string());
-        assert!(lints_disabled.is_empty(), "Spelling error should be ignored when disabled");
+        assert!(
+            lints_disabled.is_empty(),
+            "Spelling error should be ignored when disabled"
+        );
     }
 
     #[test]
@@ -174,12 +198,42 @@ mod tests {
 
         engine.update_config(HarperConfig {
             dialect: HarperDialect::American,
-            document_mode: "plain_english".to_string(),
+            document_mode: DocumentMode::PlainEnglish,
             disabled_rules: vec![],
             user_dictionary: vec!["testt".to_string()],
         });
 
         let lints_disabled = engine.lint(text, "".to_string());
-        assert!(lints_disabled.is_empty(), "Spelling error should be ignored when added to dictionary");
+        assert!(
+            lints_disabled.is_empty(),
+            "Spelling error should be ignored when added to dictionary"
+        );
+    }
+
+    #[test]
+    fn test_markdown_mode() {
+        let engine = HarperEngine::create();
+        let text = "
+# Title
+
+Here is some code:
+```python
+print(\"teh\")
+```
+        ".to_string();
+
+        // Under plain english, `print(\"teh\")` flags \"teh\" as a spelling error.
+        let lints_plain = engine.lint(text.clone(), "".to_string());
+        assert!(!lints_plain.is_empty(), "Should catch 'teh' under plain english");
+
+        engine.update_config(HarperConfig {
+            dialect: HarperDialect::American,
+            document_mode: DocumentMode::Markdown,
+            disabled_rules: vec![],
+            user_dictionary: vec![],
+        });
+
+        let lints_markdown = engine.lint(text, "".to_string());
+        assert!(lints_markdown.is_empty(), "Should ignore 'teh' inside a markdown code block");
     }
 }

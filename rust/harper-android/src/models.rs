@@ -7,10 +7,16 @@ pub enum HarperDialect {
     Indian,
 }
 
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentMode {
+    PlainEnglish,
+    Markdown,
+}
+
 #[derive(uniffi::Record)]
 pub struct HarperConfig {
     pub dialect: HarperDialect,
-    pub document_mode: String,
+    pub document_mode: DocumentMode,
     pub disabled_rules: Vec<String>,
     pub user_dictionary: Vec<String>,
 }
@@ -45,9 +51,9 @@ pub struct AnalysisMetadata {
     pub execution_time_ms: u32,
 }
 
-impl Into<harper_core::Dialect> for HarperDialect {
-    fn into(self) -> harper_core::Dialect {
-        match self {
+impl From<HarperDialect> for harper_core::Dialect {
+    fn from(val: HarperDialect) -> Self {
+        match val {
             HarperDialect::American => harper_core::Dialect::American,
             HarperDialect::Canadian => harper_core::Dialect::Canadian,
             HarperDialect::Australian => harper_core::Dialect::Australian,

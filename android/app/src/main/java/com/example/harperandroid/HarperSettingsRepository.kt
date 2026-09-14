@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import uniffi.harper_android.HarperConfig
 import uniffi.harper_android.HarperDialect
 
+import uniffi.harper_android.DocumentMode
+
 class HarperSettingsRepository(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("harper_settings", Context.MODE_PRIVATE)
 
@@ -17,6 +19,11 @@ class HarperSettingsRepository(private val context: Context) {
     fun updateDialect(dialect: HarperDialect) {
         prefs.edit().putString("dialect", dialect.name).apply()
         _config.value = _config.value.copy(dialect = dialect)
+    }
+
+    fun updateDocumentMode(mode: DocumentMode) {
+        prefs.edit().putString("document_mode", mode.name).apply()
+        _config.value = _config.value.copy(documentMode = mode)
     }
 
     fun toggleRule(ruleId: String, disabled: Boolean) {
@@ -53,11 +60,19 @@ class HarperSettingsRepository(private val context: Context) {
         } catch (e: IllegalArgumentException) {
             HarperDialect.AMERICAN
         }
+        
+        val documentModeName = prefs.getString("document_mode", DocumentMode.PLAIN_ENGLISH.name) ?: DocumentMode.PLAIN_ENGLISH.name
+        val documentMode = try {
+            DocumentMode.valueOf(documentModeName)
+        } catch (e: IllegalArgumentException) {
+            DocumentMode.PLAIN_ENGLISH
+        }
+        
         val disabledRules = prefs.getStringSet("disabled_rules", emptySet())?.toList() ?: emptyList()
         val userDictionary = prefs.getStringSet("user_dictionary", emptySet())?.toList() ?: emptyList()
         return HarperConfig(
             dialect = dialect,
-            documentMode = "plain_english",
+            documentMode = documentMode,
             disabledRules = disabledRules,
             userDictionary = userDictionary
         )

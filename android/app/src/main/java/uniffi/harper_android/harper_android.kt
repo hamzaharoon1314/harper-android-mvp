@@ -1470,7 +1470,7 @@ public object FfiConverterTypeAnalysisMetadata: FfiConverterRustBuffer<AnalysisM
 
 data class HarperConfig (
     var `dialect`: HarperDialect, 
-    var `documentMode`: kotlin.String, 
+    var `documentMode`: DocumentMode, 
     var `disabledRules`: List<kotlin.String>, 
     var `userDictionary`: List<kotlin.String>
 ) {
@@ -1485,7 +1485,7 @@ public object FfiConverterTypeHarperConfig: FfiConverterRustBuffer<HarperConfig>
     override fun read(buf: ByteBuffer): HarperConfig {
         return HarperConfig(
             FfiConverterTypeHarperDialect.read(buf),
-            FfiConverterString.read(buf),
+            FfiConverterTypeDocumentMode.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterSequenceString.read(buf),
         )
@@ -1493,14 +1493,14 @@ public object FfiConverterTypeHarperConfig: FfiConverterRustBuffer<HarperConfig>
 
     override fun allocationSize(value: HarperConfig) = (
             FfiConverterTypeHarperDialect.allocationSize(value.`dialect`) +
-            FfiConverterString.allocationSize(value.`documentMode`) +
+            FfiConverterTypeDocumentMode.allocationSize(value.`documentMode`) +
             FfiConverterSequenceString.allocationSize(value.`disabledRules`) +
             FfiConverterSequenceString.allocationSize(value.`userDictionary`)
     )
 
     override fun write(value: HarperConfig, buf: ByteBuffer) {
             FfiConverterTypeHarperDialect.write(value.`dialect`, buf)
-            FfiConverterString.write(value.`documentMode`, buf)
+            FfiConverterTypeDocumentMode.write(value.`documentMode`, buf)
             FfiConverterSequenceString.write(value.`disabledRules`, buf)
             FfiConverterSequenceString.write(value.`userDictionary`, buf)
     }
@@ -1589,6 +1589,36 @@ public object FfiConverterTypeHarperSuggestion: FfiConverterRustBuffer<HarperSug
             FfiConverterTypeEditOperation.write(value.`operation`, buf)
     }
 }
+
+
+
+
+enum class DocumentMode {
+    
+    PLAIN_ENGLISH,
+    MARKDOWN;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDocumentMode: FfiConverterRustBuffer<DocumentMode> {
+    override fun read(buf: ByteBuffer) = try {
+        DocumentMode.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DocumentMode) = 4UL
+
+    override fun write(value: DocumentMode, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
