@@ -1,4 +1,4 @@
-﻿package com.example.harperandroid
+package com.example.harperandroid
 
 import android.content.Context
 import android.graphics.PixelFormat
@@ -22,6 +22,7 @@ class OverlayManager(
     private val scope: CoroutineScope,
     private val applier: CorrectionApplier = CorrectionApplier()
 ) {
+    private val positioner = OverlayPositioner(context)
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: View? = null
     private var selectedIssueId: String? = null
@@ -56,7 +57,7 @@ class OverlayManager(
             val containerSuggestions = view.findViewById<LinearLayout>(R.id.container_suggestions)
             val btnDismiss = view.findViewById<Button>(R.id.btn_dismiss)
 
-            tvTitle.text = "${currentIndex + 1} of "
+            tvTitle.text = "${currentIndex + 1} of ${lints.size}"
             tvMessage.text = lint.message
 
             btnPrev.isEnabled = lints.size > 1
@@ -97,22 +98,9 @@ class OverlayManager(
                 }
             }
 
+            val params = positioner.getLayoutParams(node)
+
             if (isNewView) {
-                val bounds = Rect()
-                node.getBoundsInScreen(bounds)
-
-                val params = WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = Gravity.TOP or Gravity.START
-                    x = 0
-                    y = bounds.bottom + 10 // popup appears near target
-                }
-
                 try {
                     windowManager.addView(view, params)
                     overlayView = view
@@ -120,9 +108,22 @@ class OverlayManager(
                     Log.e("Harper", "Failed to add overlay", e)
                 }
             } else {
-                // We might want to update position if bounds changed, but for now just update contents
-                // Since overlayView is already in window, changing its subviews updates it dynamically.
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (e: Exception) {
+                    Log.e("Harper", "Failed to update overlay layout", e)
+                }
             }
+        }
+    }
+
+    fun repositionOverlay(node: AccessibilityNodeInfo) {
+        val view = overlayView ?: return
+        val params = positioner.getLayoutParams(node)
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            Log.e("Harper", "Failed to reposition overlay", e)
         }
     }
 

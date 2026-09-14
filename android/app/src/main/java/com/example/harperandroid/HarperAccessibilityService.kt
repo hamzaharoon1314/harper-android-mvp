@@ -57,8 +57,33 @@ class HarperAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (::editableNodeTracker.isInitialized) {
+                val node = editableNodeTracker.currentNode
+                if (node != null && event.windowId == node.windowId) {
+                    // Refresh node to get updated bounds
+                    if (node.refresh()) {
+                        overlayManager.repositionOverlay(node)
+                    }
+                }
+            }
+        }
+
         if (::editableNodeTracker.isInitialized) {
             editableNodeTracker.onAccessibilityEvent(event)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::editableNodeTracker.isInitialized) {
+            val node = editableNodeTracker.currentNode
+            if (node != null && node.refresh()) {
+                overlayManager.repositionOverlay(node)
+            }
         }
     }
 
