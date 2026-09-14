@@ -1,5 +1,5 @@
 use crate::compatibility::{convert_utf16_offsets, map_suggestion};
-use crate::models::{HarperConfig, HarperLint, DocumentMode};
+use crate::models::{DocumentMode, HarperConfig, HarperLint};
 use harper_core::linting::{LintGroup, Linter};
 use harper_core::spell::{FstDictionary, MergedDictionary, MutableDictionary};
 use harper_core::{DictWordMetadata, Document};
@@ -84,7 +84,7 @@ impl HarperEngine {
     pub fn lint(&self, text: String, _language: String) -> Vec<HarperLint> {
         let dict = self.active_dict.lock().unwrap().clone();
         let mode = *self.document_mode.lock().unwrap();
-        
+
         let doc = match mode {
             DocumentMode::PlainEnglish => Document::new_plain_english(&text, &*dict),
             DocumentMode::Markdown => Document::new_markdown_default(&text, &*dict),
@@ -220,11 +220,15 @@ Here is some code:
 ```python
 print(\"teh\")
 ```
-        ".to_string();
+        "
+        .to_string();
 
         // Under plain english, `print(\"teh\")` flags \"teh\" as a spelling error.
         let lints_plain = engine.lint(text.clone(), "".to_string());
-        assert!(!lints_plain.is_empty(), "Should catch 'teh' under plain english");
+        assert!(
+            !lints_plain.is_empty(),
+            "Should catch 'teh' under plain english"
+        );
 
         engine.update_config(HarperConfig {
             dialect: HarperDialect::American,
@@ -234,6 +238,9 @@ print(\"teh\")
         });
 
         let lints_markdown = engine.lint(text, "".to_string());
-        assert!(lints_markdown.is_empty(), "Should ignore 'teh' inside a markdown code block");
+        assert!(
+            lints_markdown.is_empty(),
+            "Should ignore 'teh' inside a markdown code block"
+        );
     }
 }
