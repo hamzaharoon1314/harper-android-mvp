@@ -243,4 +243,35 @@ print(\"teh\")
             "Should ignore 'teh' inside a markdown code block"
         );
     }
+
+    #[test]
+    fn test_utf16_offsets_with_emoji() {
+        // An emoji is 2 UTF-16 code units. Place a word error after it.
+        // "😀 He go to school" — "go" starts at UTF-16 offset 7 (emoji=2, space=1, "He"=2, space=1 → 6, "go" at 7)
+        let engine = HarperEngine::create();
+        let text = "😀 He go to school".to_string();
+        let lints = engine.lint(text.clone(), "".to_string());
+        // At least one lint expected (subject-verb agreement)
+        assert!(!lints.is_empty(), "Expected a lint for 'He go'");
+        let lint = lints.iter().find(|l| {
+            let slice: Vec<u16> = text.encode_utf16().collect();
+            let word: String = String::from_utf16_lossy(
+                &slice[l.start_utf16 as usize..l.end_utf16 as usize]
+            );
+            word == "go"
+        });
+        assert!(lint.is_some(), "Expected lint to span exactly 'go' at correct UTF-16 offsets");
+    }
+
+    #[test]
+    fn test_suggestion_replace_operation() {
+        use crate::models::EditOperation;
+        let engine = HarperEngine::create();
+        let lints = engine.lint("He go to school".to_string(), "".to_string());
+        assert!(!lints.is_empty());
+        let has_replace = lints[0].suggestions.iter().any(|s| {
+            matches!(&s.operation, EditOperation::ReplaceWith { .. })
+        });
+        assert!(has_replace, "Expected a ReplaceWith suggestion for subject-verb agreement");
+    }
 }
