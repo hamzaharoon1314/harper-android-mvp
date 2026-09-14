@@ -1,18 +1,15 @@
-package com.example.harperandroid
+﻿package com.example.harperandroid
 
-import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import uniffi.harper_android.HarperLint
 import uniffi.harper_android.HarperSuggestion
 import uniffi.harper_android.EditOperation
 
-class CorrectionApplier {
+class CorrectionApplier(
+    private val strategies: List<CorrectionStrategy> = listOf(SetTextCorrectionStrategy())
+) {
 
-    /**
-     * Applies a correction to an AccessibilityNodeInfo.
-     * Validates that the current text in the node perfectly matches the text from the analyzed snapshot.
-     */
     fun applyCorrection(
         node: AccessibilityNodeInfo,
         snapshot: TextSnapshot,
@@ -50,17 +47,15 @@ class CorrectionApplier {
             }
         }
 
-        val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
+        for (strategy in strategies) {
+            val success = strategy.applyCorrection(node, currentText, newText, snapshot, lint, suggestion)
+            if (success) {
+                Log.d("Harper", "Successfully applied correction: '${suggestion.displayText}' via ${strategy.javaClass.simpleName}")
+                return true
+            }
         }
 
-        val success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (success) {
-            Log.d("Harper", "Successfully applied correction: '${suggestion.displayText}'")
-        } else {
-            Log.e("Harper", "Failed to perform ACTION_SET_TEXT")
-        }
-
-        return success
+        Log.e("Harper", "All correction strategies failed.")
+        return false
     }
 }
