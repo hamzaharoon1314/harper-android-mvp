@@ -1,4 +1,4 @@
-﻿package com.example.harperandroid
+package com.example.harperandroid
 
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
@@ -50,7 +50,7 @@ class CorrectionApplier(
         for (strategy in strategies) {
             val success = strategy.applyCorrection(node, currentText, newText, snapshot, lint, suggestion)
             if (success) {
-                Log.d("Harper", "Successfully applied correction: '${suggestion.displayText}' via ${strategy.javaClass.simpleName}")
+                Log.d("Harper", "Successfully applied correction via ${strategy.javaClass.simpleName}")
                 return true
             }
         }
