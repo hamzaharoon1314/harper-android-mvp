@@ -47,6 +47,11 @@ class EditableNodeTracker(
 
         if (node.isEditable && node.isFocused) {
             val text = node.text?.toString() ?: ""
+            if (text.length > 50_000) {
+                Log.w("Harper", "Input bounds exceeded: Node text length ${text.length} is greater than 50,000 limit. Dropping analysis.")
+                return
+            }
+
             val identity = NodeIdentity(windowId = node.windowId, className = node.className?.toString() ?: "")
             val classification = eventClassifier.classify(event.eventType, identity, text)
             currentNode = node

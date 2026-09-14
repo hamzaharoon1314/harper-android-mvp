@@ -64,6 +64,9 @@ class GrammarRepository(
             }
             val endMs = android.os.SystemClock.elapsedRealtime()
             
+            // Phase 16 Performance Logging
+            android.util.Log.d("HarperPerformance", "Linted ${snapshot.text.length} chars in ${endMs - startMs}ms (Thread: ${Thread.currentThread().name})")
+            
             val currentGen = latestGenerations[snapshot.nodeIdentity] ?: 0L
             val isGenerationStale = snapshot.generation < currentGen
             val isConfigStale = configVersion < _configVersion.value
