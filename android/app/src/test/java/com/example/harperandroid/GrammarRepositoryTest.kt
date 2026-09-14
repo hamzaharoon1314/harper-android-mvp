@@ -72,4 +72,30 @@ class GrammarRepositoryTest {
         assertTrue(finalResult.lints.isNotEmpty())
         assertTrue(finalResult.lints[0].suggestions.any { it.displayText.contains("goes") })
     }
+
+    @Test
+    fun testExplicitStaleResultRejection() = runTest {
+        val engine = HarperEngine.create()
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        val repository = GrammarRepository(scope = backgroundScope, engine = engine, backgroundDispatcher = testDispatcher)
+
+        val results = mutableListOf<AnalysisResult>()
+        val job = backgroundScope.launch(kotlinx.coroutines.Dispatchers.Unconfined) {
+            repository.analysisResults.toList(results)
+        }
+
+        // Submit generation 10
+        repository.submitSnapshot(createSnapshot("Current text", 10))
+        advanceTimeBy(1000)
+        
+        assertEquals(1, results.size)
+        
+        // Now submit an older generation (e.g. 5) that arrived late
+        repository.submitSnapshot(createSnapshot("Old text", 5))
+        advanceTimeBy(1000)
+
+        // Should be rejected explicitly, so no new result emitted
+        assertEquals(1, results.size)
+        assertEquals(10L, results.first().snapshot.generation)
+    }
 }
