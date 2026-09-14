@@ -23,10 +23,29 @@ class HarperAccessibilityService : AccessibilityService() {
         overlayManager = OverlayManager(this, serviceScope)
 
         serviceScope.launch {
-            grammarRepository.analysisResults.collect { result ->
+            kotlinx.coroutines.flow.combine(
+                grammarRepository.analysisResults,
+                editableNodeTracker.currentSnapshot
+            ) { result, snapshot ->
+                Pair(result, snapshot)
+            }.collect { (result, snapshot) ->
                 val node = editableNodeTracker.currentNode
-                if (node != null && result.lints.isNotEmpty() && result.snapshot.text.isNotEmpty()) {
-                    overlayManager.updateOverlay(node, result.snapshot, result.lints)
+                if (node != null && snapshot != null && result.snapshot.text.isNotEmpty()) {
+                    // Filter lints that intersect the cursor (composition-aware state)
+                    val cursorStart = snapshot.selectionStart ?: -1
+                    val cursorEnd = snapshot.selectionEnd ?: -1
+                    
+                    val safeLints = result.lints.filter { lint ->
+                        val intersects = cursorStart >= 0 && cursorEnd >= 0 &&
+                                lint.startUtf16.toInt() <= cursorEnd && lint.endUtf16.toInt() >= cursorStart
+                        !intersects
+                    }
+
+                    if (safeLints.isNotEmpty()) {
+                        overlayManager.updateOverlay(node, result.snapshot, safeLints)
+                    } else {
+                        overlayManager.removeOverlay()
+                    }
                 } else {
                     overlayManager.removeOverlay()
                 }

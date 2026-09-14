@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 
@@ -16,6 +17,9 @@ class EditableNodeTracker(
     private val eventClassifier = EventClassifier()
     var currentNode: AccessibilityNodeInfo? = null
         private set
+        
+    private val _currentSnapshot = kotlinx.coroutines.flow.MutableStateFlow<TextSnapshot?>(null)
+    val currentSnapshot: kotlinx.coroutines.flow.StateFlow<TextSnapshot?> = _currentSnapshot.asStateFlow()
 
     fun onAccessibilityEvent(event: AccessibilityEvent) {
         val node = event.source ?: return
@@ -45,6 +49,18 @@ class EditableNodeTracker(
             val identity = NodeIdentity(windowId = node.windowId, className = node.className?.toString() ?: "")
             val classification = eventClassifier.classify(event.eventType, identity, text)
             currentNode = node
+            
+            val snapshot = TextSnapshot(
+                packageName = packageName,
+                nodeIdentity = identity,
+                text = text,
+                selectionStart = node.textSelectionStart.takeIf { it >= 0 },
+                selectionEnd = node.textSelectionEnd.takeIf { it >= 0 },
+                generation = generationCounter.incrementAndGet(),
+                capturedAtElapsedMs = SystemClock.elapsedRealtime()
+            )
+            
+            _currentSnapshot.value = snapshot
 
             // If it's a movement/composition without actual text changes, don't trigger heavy analysis
             if (classification == EventClassification.SELECTION_MOVED || 
@@ -52,19 +68,6 @@ class EditableNodeTracker(
                 classification == EventClassification.IGNORED) {
                 return
             }
-            
-            val snapshot = TextSnapshot(
-                packageName = packageName,
-                nodeIdentity = NodeIdentity(
-                    windowId = node.windowId,
-                    className = node.className?.toString() ?: ""
-                ),
-                text = text,
-                selectionStart = node.textSelectionStart.takeIf { it >= 0 },
-                selectionEnd = node.textSelectionEnd.takeIf { it >= 0 },
-                generation = generationCounter.incrementAndGet(),
-                capturedAtElapsedMs = SystemClock.elapsedRealtime()
-            )
             
             // Raw text MUST NOT BE LOGGED (Phase 7 Privacy Rule)
             Log.d("Harper", "Identified editable node in $packageName. Classification: $classification. Starting analysis...")
@@ -74,6 +77,7 @@ class EditableNodeTracker(
         } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
             // Focus changed to something not editable, or lost focus
             currentNode = null
+            _currentSnapshot.value = null
             scope.launch {
                 grammarRepository.submitSnapshot(TextSnapshot("", NodeIdentity(-1, ""), "", null, null, generationCounter.incrementAndGet(), SystemClock.elapsedRealtime()))
             }
