@@ -13,6 +13,7 @@ class EditableNodeTracker(
     private val grammarRepository: GrammarRepository
 ) {
     private val generationCounter = AtomicLong(0)
+    private val eventClassifier = EventClassifier()
     var currentNode: AccessibilityNodeInfo? = null
         private set
 
@@ -20,7 +21,8 @@ class EditableNodeTracker(
         val node = event.source ?: return
         
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED || 
-            event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED) {
             checkNode(node, event)
         }
     }
@@ -39,8 +41,17 @@ class EditableNodeTracker(
         }
 
         if (node.isEditable && node.isFocused) {
-            currentNode = node
             val text = node.text?.toString() ?: ""
+            val identity = NodeIdentity(windowId = node.windowId, className = node.className?.toString() ?: "")
+            val classification = eventClassifier.classify(event.eventType, identity, text)
+            currentNode = node
+
+            // If it's a movement/composition without actual text changes, don't trigger heavy analysis
+            if (classification == EventClassification.SELECTION_MOVED || 
+                classification == EventClassification.COMPOSITION_CHANGED || 
+                classification == EventClassification.IGNORED) {
+                return
+            }
             
             val snapshot = TextSnapshot(
                 packageName = packageName,
@@ -56,7 +67,7 @@ class EditableNodeTracker(
             )
             
             // Raw text MUST NOT BE LOGGED (Phase 7 Privacy Rule)
-            Log.d("Harper", "Identified editable node in $packageName. Starting analysis...")
+            Log.d("Harper", "Identified editable node in $packageName. Classification: $classification. Starting analysis...")
             scope.launch {
                 grammarRepository.submitSnapshot(snapshot)
             }
