@@ -1,4 +1,4 @@
-package com.example.harperandroid
+﻿package com.example.harperandroid
 
 import android.content.Context
 import android.graphics.PixelFormat
@@ -24,6 +24,7 @@ class OverlayManager(
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: View? = null
+    private var selectedIssueId: String? = null
 
     fun updateOverlay(
         node: AccessibilityNodeInfo,
@@ -31,70 +32,96 @@ class OverlayManager(
         lints: List<HarperLint>
     ) {
         scope.launch(Dispatchers.Main) {
-            removeOverlay()
-
-            if (lints.isEmpty()) return@launch
-
-            val lint = lints.first() // MVP: Just show the first suggestion
-            val suggestion = lint.suggestions.firstOrNull() ?: return@launch
-
-            val view = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setBackgroundColor(0xFFE0E0E0.toInt())
-                setPadding(16, 16, 16, 16)
-                
-                // Text
-                val textView = TextView(context).apply {
-                    text = "${lint.message}\nSuggestion: ${suggestion.displayText}"
-                    setTextColor(0xFF000000.toInt())
-                    setPadding(0, 0, 16, 0)
-                }
-                addView(textView)
-
-                // Apply button
-                val applyButton = Button(context).apply {
-                    text = "Apply"
-                    setOnClickListener {
-                        applier.applyCorrection(node, snapshot, lint, suggestion)
-                        removeOverlay()
-                    }
-                }
-                addView(applyButton)
-
-                // Ignore button
-                val ignoreButton = Button(context).apply {
-                    text = "Ignore"
-                    setOnClickListener {
-                        removeOverlay()
-                    }
-                }
-                addView(ignoreButton)
+            if (lints.isEmpty()) {
+                removeOverlay()
+                return@launch
             }
 
-            // Figure out node bounds
-            val bounds = Rect()
-            node.getBoundsInScreen(bounds)
+            // Keep selected issue if it still exists in the new list, otherwise default to first
+            var currentIndex = lints.indexOfFirst { it.issueId == selectedIssueId }
+            if (currentIndex == -1) {
+                currentIndex = 0
+            }
+            selectedIssueId = lints[currentIndex].issueId
 
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = bounds.left
-                y = bounds.bottom + 10 // popup appears near target
+            val lint = lints[currentIndex]
+
+            val isNewView = overlayView == null
+            val view = overlayView ?: LayoutInflater.from(context).inflate(R.layout.harper_overlay, null)
+
+            val tvTitle = view.findViewById<TextView>(R.id.tv_lint_title)
+            val tvMessage = view.findViewById<TextView>(R.id.tv_lint_message)
+            val btnPrev = view.findViewById<Button>(R.id.btn_prev)
+            val btnNext = view.findViewById<Button>(R.id.btn_next)
+            val containerSuggestions = view.findViewById<LinearLayout>(R.id.container_suggestions)
+            val btnDismiss = view.findViewById<Button>(R.id.btn_dismiss)
+
+            tvTitle.text = "${currentIndex + 1} of "
+            tvMessage.text = lint.message
+
+            btnPrev.isEnabled = lints.size > 1
+            btnPrev.setOnClickListener {
+                val prevIndex = if (currentIndex > 0) currentIndex - 1 else lints.size - 1
+                selectedIssueId = lints[prevIndex].issueId
+                updateOverlay(node, snapshot, lints)
             }
 
-            try {
-                val startMs = android.os.SystemClock.elapsedRealtime()
-                windowManager.addView(view, params)
-                overlayView = view
-                val endMs = android.os.SystemClock.elapsedRealtime()
-                Log.d("HarperPerformance", "overlay_ms=${endMs - startMs} target_latency_ms=${endMs - snapshot.capturedAtElapsedMs}")
-            } catch (e: Exception) {
-                Log.e("Harper", "Failed to add overlay", e)
+            btnNext.isEnabled = lints.size > 1
+            btnNext.setOnClickListener {
+                val nextIndex = if (currentIndex < lints.size - 1) currentIndex + 1 else 0
+                selectedIssueId = lints[nextIndex].issueId
+                updateOverlay(node, snapshot, lints)
+            }
+
+            btnDismiss.setOnClickListener {
+                removeOverlay()
+            }
+
+            containerSuggestions.removeAllViews()
+            if (lint.suggestions.isEmpty()) {
+                val noSugg = TextView(context).apply {
+                    text = "No suggestions"
+                    setPadding(8, 8, 8, 8)
+                }
+                containerSuggestions.addView(noSugg)
+            } else {
+                for (suggestion in lint.suggestions) {
+                    val btn = Button(context).apply {
+                        text = suggestion.displayText
+                        setOnClickListener {
+                            applier.applyCorrection(node, snapshot, lint, suggestion)
+                            removeOverlay()
+                        }
+                    }
+                    containerSuggestions.addView(btn)
+                }
+            }
+
+            if (isNewView) {
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    x = 0
+                    y = bounds.bottom + 10 // popup appears near target
+                }
+
+                try {
+                    windowManager.addView(view, params)
+                    overlayView = view
+                } catch (e: Exception) {
+                    Log.e("Harper", "Failed to add overlay", e)
+                }
+            } else {
+                // We might want to update position if bounds changed, but for now just update contents
+                // Since overlayView is already in window, changing its subviews updates it dynamically.
             }
         }
     }
@@ -104,6 +131,7 @@ class OverlayManager(
             try {
                 windowManager.removeView(overlayView)
                 overlayView = null
+                selectedIssueId = null
                 Log.d("Harper", "Overlay removed")
             } catch (e: Exception) {
                 Log.e("Harper", "Failed to remove overlay", e)
