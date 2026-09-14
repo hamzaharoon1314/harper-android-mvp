@@ -1,15 +1,16 @@
 use crate::compatibility::{convert_utf16_offsets, map_suggestion};
 use crate::models::{AnalysisMetadata, EditOperation, HarperConfig, HarperLint, HarperSuggestion};
 use harper_core::linting::{LintGroup, Linter};
-use harper_core::spell::FstDictionary;
-use harper_core::Document;
+use harper_core::spell::{FstDictionary, MergedDictionary, MutableDictionary, Dictionary};
+use harper_core::{Document, DictWordMetadata};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(uniffi::Object)]
 pub struct HarperEngine {
-    dict: Arc<FstDictionary>,
+    base_dict: Arc<FstDictionary>,
+    active_dict: Mutex<Arc<MergedDictionary>>,
     linter: Mutex<LintGroup>,
     config_version: AtomicU32,
 }
@@ -18,21 +19,47 @@ pub struct HarperEngine {
 impl HarperEngine {
     #[uniffi::constructor]
     pub fn create() -> Self {
-        let dict = FstDictionary::curated();
+        let base_dict = FstDictionary::curated();
+        let mut merged = MergedDictionary::new();
+        merged.add_dictionary(base_dict.clone());
+        
+        let merged_arc = Arc::new(merged);
+        
         let linter = Mutex::new(LintGroup::new_curated(
-            dict.clone(),
+            merged_arc.clone(),
             harper_core::Dialect::American,
         ));
-        Self { dict, linter, config_version: AtomicU32::new(0) }
+        Self { 
+            base_dict, 
+            active_dict: Mutex::new(merged_arc), 
+            linter, 
+            config_version: AtomicU32::new(0) 
+        }
     }
 
     pub fn update_config(&self, config: HarperConfig) {
+        let mut merged = MergedDictionary::new();
+        merged.add_dictionary(self.base_dict.clone());
+
+        if !config.user_dictionary.is_empty() {
+            let mut user_dict = MutableDictionary::new();
+            for word in &config.user_dictionary {
+                user_dict.append_word_str(word, DictWordMetadata::default());
+            }
+            merged.add_dictionary(Arc::new(user_dict));
+        }
+
+        let merged_arc = Arc::new(merged);
+
         let mut linter_guard = self.linter.lock().unwrap();
-        let mut new_linter = LintGroup::new_curated(self.dict.clone(), config.dialect.into());
+        let mut new_linter = LintGroup::new_curated(merged_arc.clone(), config.dialect.into());
         for rule in config.disabled_rules {
             new_linter.config.set_rule_enabled(&rule, false);
         }
         *linter_guard = new_linter;
+        
+        *self.active_dict.lock().unwrap() = merged_arc;
+        
         self.config_version.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -53,7 +80,8 @@ impl HarperEngine {
     }
 
     pub fn lint(&self, text: String, _language: String) -> Vec<HarperLint> {
-        let doc = Document::new_plain_english(&text, &*self.dict);
+        let dict = self.active_dict.lock().unwrap().clone();
+        let doc = Document::new_plain_english(&text, &*dict);
         let mut linter_guard = self.linter.lock().unwrap();
         let lints = linter_guard.lint(&doc);
         drop(linter_guard);
@@ -104,6 +132,7 @@ mod tests {
             dialect: HarperDialect::British,
             document_mode: "plain_english".to_string(),
             disabled_rules: vec![],
+            user_dictionary: vec![],
         });
 
         // "colour" is correct in British
@@ -129,9 +158,28 @@ mod tests {
             dialect: HarperDialect::American,
             document_mode: "plain_english".to_string(),
             disabled_rules: vec!["SpellCheck".to_string()],
+            user_dictionary: vec![],
         });
 
         let lints_disabled = engine.lint(text, "".to_string());
         assert!(lints_disabled.is_empty(), "Spelling error should be ignored when disabled");
+    }
+
+    #[test]
+    fn test_user_dictionary() {
+        let engine = HarperEngine::create();
+        let text = "This is a testt.".to_string();
+        let lints = engine.lint(text.clone(), "".to_string());
+        assert!(!lints.is_empty(), "Spelling error should be caught");
+
+        engine.update_config(HarperConfig {
+            dialect: HarperDialect::American,
+            document_mode: "plain_english".to_string(),
+            disabled_rules: vec![],
+            user_dictionary: vec!["testt".to_string()],
+        });
+
+        let lints_disabled = engine.lint(text, "".to_string());
+        assert!(lints_disabled.is_empty(), "Spelling error should be ignored when added to dictionary");
     }
 }

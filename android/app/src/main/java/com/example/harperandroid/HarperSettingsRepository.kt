@@ -30,6 +30,22 @@ class HarperSettingsRepository(private val context: Context) {
         _config.value = _config.value.copy(disabledRules = currentDisabled.toList())
     }
 
+    fun addWordToDictionary(word: String) {
+        val currentDict = _config.value.userDictionary.toMutableSet()
+        if (currentDict.add(word)) {
+            prefs.edit().putStringSet("user_dictionary", currentDict).apply()
+            _config.value = _config.value.copy(userDictionary = currentDict.toList())
+        }
+    }
+
+    fun removeWordFromDictionary(word: String) {
+        val currentDict = _config.value.userDictionary.toMutableSet()
+        if (currentDict.remove(word)) {
+            prefs.edit().putStringSet("user_dictionary", currentDict).apply()
+            _config.value = _config.value.copy(userDictionary = currentDict.toList())
+        }
+    }
+
     private fun loadConfig(): HarperConfig {
         val dialectName = prefs.getString("dialect", HarperDialect.AMERICAN.name) ?: HarperDialect.AMERICAN.name
         val dialect = try {
@@ -38,6 +54,12 @@ class HarperSettingsRepository(private val context: Context) {
             HarperDialect.AMERICAN
         }
         val disabledRules = prefs.getStringSet("disabled_rules", emptySet())?.toList() ?: emptyList()
-        return HarperConfig(dialect = dialect, documentMode = "plain_english", disabledRules = disabledRules)
+        val userDictionary = prefs.getStringSet("user_dictionary", emptySet())?.toList() ?: emptyList()
+        return HarperConfig(
+            dialect = dialect,
+            documentMode = "plain_english",
+            disabledRules = disabledRules,
+            userDictionary = userDictionary
+        )
     }
 }

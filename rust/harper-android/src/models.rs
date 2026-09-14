@@ -12,6 +12,7 @@ pub struct HarperConfig {
     pub dialect: HarperDialect,
     pub document_mode: String,
     pub disabled_rules: Vec<String>,
+    pub user_dictionary: Vec<String>,
 }
 
 #[derive(uniffi::Record)]

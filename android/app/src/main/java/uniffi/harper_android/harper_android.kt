@@ -1471,7 +1471,8 @@ public object FfiConverterTypeAnalysisMetadata: FfiConverterRustBuffer<AnalysisM
 data class HarperConfig (
     var `dialect`: HarperDialect, 
     var `documentMode`: kotlin.String, 
-    var `disabledRules`: List<kotlin.String>
+    var `disabledRules`: List<kotlin.String>, 
+    var `userDictionary`: List<kotlin.String>
 ) {
     
     companion object
@@ -1486,19 +1487,22 @@ public object FfiConverterTypeHarperConfig: FfiConverterRustBuffer<HarperConfig>
             FfiConverterTypeHarperDialect.read(buf),
             FfiConverterString.read(buf),
             FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceString.read(buf),
         )
     }
 
     override fun allocationSize(value: HarperConfig) = (
             FfiConverterTypeHarperDialect.allocationSize(value.`dialect`) +
             FfiConverterString.allocationSize(value.`documentMode`) +
-            FfiConverterSequenceString.allocationSize(value.`disabledRules`)
+            FfiConverterSequenceString.allocationSize(value.`disabledRules`) +
+            FfiConverterSequenceString.allocationSize(value.`userDictionary`)
     )
 
     override fun write(value: HarperConfig, buf: ByteBuffer) {
             FfiConverterTypeHarperDialect.write(value.`dialect`, buf)
             FfiConverterString.write(value.`documentMode`, buf)
             FfiConverterSequenceString.write(value.`disabledRules`, buf)
+            FfiConverterSequenceString.write(value.`userDictionary`, buf)
     }
 }
 
