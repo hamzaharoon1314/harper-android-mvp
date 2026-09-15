@@ -24,7 +24,7 @@ object ProtectedFieldDetector {
                 return true
             }
         }
-        
+
         return false
     }
 }

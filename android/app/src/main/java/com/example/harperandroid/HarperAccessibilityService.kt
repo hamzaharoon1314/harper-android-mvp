@@ -10,7 +10,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class HarperAccessibilityService : AccessibilityService() {
-
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var grammarRepository: GrammarRepository
     private lateinit var editableNodeTracker: EditableNodeTracker
@@ -25,7 +24,7 @@ class HarperAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             kotlinx.coroutines.flow.combine(
                 grammarRepository.analysisResults,
-                editableNodeTracker.currentSnapshot
+                editableNodeTracker.currentSnapshot,
             ) { result, snapshot ->
                 Pair(result, snapshot)
             }.collect { (result, snapshot) ->
@@ -34,12 +33,14 @@ class HarperAccessibilityService : AccessibilityService() {
                     // Filter lints that intersect the cursor (composition-aware state)
                     val cursorStart = snapshot.selectionStart ?: -1
                     val cursorEnd = snapshot.selectionEnd ?: -1
-                    
-                    val safeLints = result.lints.filter { lint ->
-                        val intersects = cursorStart >= 0 && cursorEnd >= 0 &&
-                                lint.startUtf16.toInt() <= cursorEnd && lint.endUtf16.toInt() >= cursorStart
-                        !intersects
-                    }
+
+                    val safeLints =
+                        result.lints.filter { lint ->
+                            val intersects =
+                                cursorStart >= 0 && cursorEnd >= 0 &&
+                                    lint.startUtf16.toInt() <= cursorEnd && lint.endUtf16.toInt() >= cursorStart
+                            !intersects
+                        }
 
                     if (safeLints.isNotEmpty()) {
                         overlayManager.updateOverlay(node, result.snapshot, safeLints)
@@ -51,7 +52,7 @@ class HarperAccessibilityService : AccessibilityService() {
                 }
             }
         }
-        
+
         Log.d("Harper", "HarperAccessibilityService connected")
     }
 
@@ -60,7 +61,8 @@ class HarperAccessibilityService : AccessibilityService() {
 
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        ) {
             if (::editableNodeTracker.isInitialized) {
                 val node = editableNodeTracker.currentNode
                 if (node != null && event.windowId == node.windowId) {

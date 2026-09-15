@@ -5,10 +5,9 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import uniffi.harper_android.DocumentMode
 import uniffi.harper_android.HarperConfig
 import uniffi.harper_android.HarperDialect
-
-import uniffi.harper_android.DocumentMode
 
 class HarperSettingsRepository(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("harper_settings", Context.MODE_PRIVATE)
@@ -26,7 +25,10 @@ class HarperSettingsRepository(private val context: Context) {
         _config.value = _config.value.copy(documentMode = mode)
     }
 
-    fun toggleRule(ruleId: String, disabled: Boolean) {
+    fun toggleRule(
+        ruleId: String,
+        disabled: Boolean,
+    ) {
         val currentDisabled = _config.value.disabledRules.toMutableSet()
         if (disabled) {
             currentDisabled.add(ruleId)
@@ -55,26 +57,28 @@ class HarperSettingsRepository(private val context: Context) {
 
     private fun loadConfig(): HarperConfig {
         val dialectName = prefs.getString("dialect", HarperDialect.AMERICAN.name) ?: HarperDialect.AMERICAN.name
-        val dialect = try {
-            HarperDialect.valueOf(dialectName)
-        } catch (e: IllegalArgumentException) {
-            HarperDialect.AMERICAN
-        }
-        
+        val dialect =
+            try {
+                HarperDialect.valueOf(dialectName)
+            } catch (e: IllegalArgumentException) {
+                HarperDialect.AMERICAN
+            }
+
         val documentModeName = prefs.getString("document_mode", DocumentMode.PLAIN_ENGLISH.name) ?: DocumentMode.PLAIN_ENGLISH.name
-        val documentMode = try {
-            DocumentMode.valueOf(documentModeName)
-        } catch (e: IllegalArgumentException) {
-            DocumentMode.PLAIN_ENGLISH
-        }
-        
+        val documentMode =
+            try {
+                DocumentMode.valueOf(documentModeName)
+            } catch (e: IllegalArgumentException) {
+                DocumentMode.PLAIN_ENGLISH
+            }
+
         val disabledRules = prefs.getStringSet("disabled_rules", emptySet())?.toList() ?: emptyList()
         val userDictionary = prefs.getStringSet("user_dictionary", emptySet())?.toList() ?: emptyList()
         return HarperConfig(
             dialect = dialect,
             documentMode = documentMode,
             disabledRules = disabledRules,
-            userDictionary = userDictionary
+            userDictionary = userDictionary,
         )
     }
 }

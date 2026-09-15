@@ -2,7 +2,7 @@ package com.example.harperandroid
 
 data class NodeIdentity(
     val windowId: Int,
-    val className: String
+    val className: String,
 )
 
 data class TextSnapshot(
@@ -12,5 +12,5 @@ data class TextSnapshot(
     val selectionStart: Int?,
     val selectionEnd: Int?,
     val generation: Long,
-    val capturedAtElapsedMs: Long
+    val capturedAtElapsedMs: Long,
 )

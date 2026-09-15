@@ -11,14 +11,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class CompositionTest {
-
     @Test
     fun testSpans() {
         val node = AccessibilityNodeInfo.obtain()
         val text = SpannableString("Hello")
         text.setSpan(UnderlineSpan(), 0, 5, 0)
         node.text = text
-        
+
         val retrieved = node.text
         println("Retrieved type: ")
         if (retrieved is android.text.Spanned) {

@@ -1,11 +1,17 @@
-﻿package com.example.harperandroid
+package com.example.harperandroid
 
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.kotlin.*
+import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.atLeastOnce
+import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import uniffi.harper_android.EditOperation
@@ -15,38 +21,45 @@ import uniffi.harper_android.HarperSuggestion
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class SetTextCorrectionStrategyTest {
-
     private val strategy = SetTextCorrectionStrategy()
 
-    private fun snapshot(text: String, cursor: Int) = TextSnapshot(
+    private fun snapshot(
+        text: String,
+        cursor: Int,
+    ) = TextSnapshot(
         packageName = "com.test",
         nodeIdentity = NodeIdentity(1, "EditText"),
         text = text,
         selectionStart = cursor,
         selectionEnd = cursor,
         generation = 1,
-        capturedAtElapsedMs = 0
+        capturedAtElapsedMs = 0,
     )
 
-    private fun lint(start: Int, end: Int) = HarperLint(
+    private fun lint(
+        start: Int,
+        end: Int,
+    ) = HarperLint(
         issueId = "id",
         startUtf16 = start.toUInt(),
         endUtf16 = end.toUInt(),
         message = "test",
         ruleId = null,
-        suggestions = emptyList()
+        suggestions = emptyList(),
     )
 
-    private fun suggestion(replacement: String) = HarperSuggestion(
-        suggestionId = "s",
-        displayText = "Fix",
-        operation = EditOperation.ReplaceWith(replacement)
-    )
+    private fun suggestion(replacement: String) =
+        HarperSuggestion(
+            suggestionId = "s",
+            displayText = "Fix",
+            operation = EditOperation.ReplaceWith(replacement),
+        )
 
-    private fun mockNode(): AccessibilityNodeInfo = mock {
-        on { performAction(eq(AccessibilityNodeInfo.ACTION_SET_TEXT), any()) } doReturn true
-        on { performAction(eq(AccessibilityNodeInfo.ACTION_SET_SELECTION), any()) } doReturn true
-    }
+    private fun mockNode(): AccessibilityNodeInfo =
+        mock {
+            on { performAction(eq(AccessibilityNodeInfo.ACTION_SET_TEXT), any()) } doReturn true
+            on { performAction(eq(AccessibilityNodeInfo.ACTION_SET_SELECTION), any()) } doReturn true
+        }
 
     private fun captureNewCursor(node: AccessibilityNodeInfo): Int {
         val captor = argumentCaptor<Bundle>()

@@ -1,7 +1,6 @@
 name: Release Validation
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -12,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -29,4 +28,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: android/app/build/outputs/apk/release/app-release.apk
+          # Release builds without a signingConfig produce app-release-unsigned.apk.
+          # Signed releases will be handled when a keystore is configured for Play Store.
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk

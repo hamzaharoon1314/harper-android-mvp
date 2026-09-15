@@ -11,6 +11,6 @@ interface CorrectionStrategy {
         newText: String,
         snapshot: TextSnapshot,
         lint: HarperLint,
-        suggestion: HarperSuggestion
+        suggestion: HarperSuggestion,
     ): Boolean
 }

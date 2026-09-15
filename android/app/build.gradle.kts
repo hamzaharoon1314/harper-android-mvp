@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jlleitschuh.gradle.ktlint")
 }
 
 android {
@@ -42,13 +43,13 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
-    
+
     sourceSets {
         getByName("main") {
             jniLibs.srcDir("src/main/jniLibs")
         }
     }
-    
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
@@ -56,13 +57,14 @@ android {
                 val releaseDir = file("../../rust/harper-android/target/release").absolutePath
                 test.systemProperty("java.library.path", releaseDir)
                 test.systemProperty("jna.library.path", releaseDir)
-                
+
                 val osName = System.getProperty("os.name").lowercase()
-                val libName = when {
-                    osName.contains("windows") -> "harper_android.dll"
-                    osName.contains("mac") -> "libharper_android.dylib"
-                    else -> "libharper_android.so"
-                }
+                val libName =
+                    when {
+                        osName.contains("windows") -> "harper_android.dll"
+                        osName.contains("mac") -> "libharper_android.dylib"
+                        else -> "libharper_android.so"
+                    }
                 test.systemProperty("uniffi.component.harper_android.libraryOverride", "$releaseDir/$libName")
             }
         }
@@ -80,13 +82,13 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    
+
     // UniFFI dependency
     implementation("net.java.dev.jna:jna:5.14.0@aar")
-    
+
     // For local unit tests on host machine, we need standard desktop JNA
     testImplementation("net.java.dev.jna:jna:5.14.0")
-    
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
@@ -102,22 +104,23 @@ dependencies {
 tasks.register<Exec>("buildRust") {
     val cargoNdk = if (System.getProperty("os.name").lowercase().contains("windows")) "cargo-ndk.exe" else "cargo-ndk"
     workingDir = file("../../rust/harper-android")
-    
-    val activeArchs = if (project.hasProperty("ciArch")) {
-        listOf(project.property("ciArch").toString())
-    } else {
-        listOf("arm64-v8a", "x86_64")
-    }
-    
+
+    val activeArchs =
+        if (project.hasProperty("ciArch")) {
+            listOf(project.property("ciArch").toString())
+        } else {
+            listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
+
     val args = mutableListOf("ndk")
     activeArchs.forEach {
         args.add("-t")
         args.add(it)
     }
     args.addAll(listOf("-o", "${project.projectDir}/src/main/jniLibs", "build", "--release"))
-    
+
     commandLine("cargo", *args.toTypedArray())
-    
+
     // cargo-ndk is installed, so we want this to fail if rust build fails
     isIgnoreExitValue = false
 }
@@ -125,5 +128,11 @@ tasks.register<Exec>("buildRust") {
 tasks.whenTaskAdded {
     if (name.startsWith("merge") && name.endsWith("JniLibFolders")) {
         dependsOn("buildRust")
+    }
+}
+
+ktlint {
+    filter {
+        exclude("**/uniffi/**")
     }
 }

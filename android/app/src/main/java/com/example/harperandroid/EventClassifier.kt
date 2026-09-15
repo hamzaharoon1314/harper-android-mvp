@@ -1,7 +1,6 @@
 package com.example.harperandroid
 
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 
 enum class EventClassification {
     FOCUS_CHANGED,
@@ -10,15 +9,18 @@ enum class EventClassification {
     COMPOSITION_CHANGED,
     NODE_RECYCLED,
     IGNORED,
-    UNSUPPORTED
+    UNSUPPORTED,
 }
 
 class EventClassifier {
     private var lastText: String? = null
     private var lastNodeIdentity: NodeIdentity? = null
 
-    fun classify(eventType: Int, identity: NodeIdentity, text: String): EventClassification {
-        
+    fun classify(
+        eventType: Int,
+        identity: NodeIdentity,
+        text: String,
+    ): EventClassification {
         if (eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
             lastNodeIdentity = identity
             lastText = text

@@ -1,10 +1,7 @@
 package com.example.harperandroid
 
 import android.content.Context
-import android.graphics.PixelFormat
-import android.graphics.Rect
 import android.util.Log
-import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
@@ -20,7 +17,7 @@ import uniffi.harper_android.HarperLint
 class OverlayManager(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val applier: CorrectionApplier = CorrectionApplier()
+    private val applier: CorrectionApplier = CorrectionApplier(),
 ) {
     private val positioner = OverlayPositioner(context)
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -30,7 +27,7 @@ class OverlayManager(
     fun updateOverlay(
         node: AccessibilityNodeInfo,
         snapshot: TextSnapshot,
-        lints: List<HarperLint>
+        lints: List<HarperLint>,
     ) {
         scope.launch(Dispatchers.Main) {
             if (lints.isEmpty()) {
@@ -80,20 +77,22 @@ class OverlayManager(
 
             containerSuggestions.removeAllViews()
             if (lint.suggestions.isEmpty()) {
-                val noSugg = TextView(context).apply {
-                    text = "No suggestions"
-                    setPadding(8, 8, 8, 8)
-                }
+                val noSugg =
+                    TextView(context).apply {
+                        text = "No suggestions"
+                        setPadding(8, 8, 8, 8)
+                    }
                 containerSuggestions.addView(noSugg)
             } else {
                 for (suggestion in lint.suggestions) {
-                    val btn = Button(context).apply {
-                        text = suggestion.displayText
-                        setOnClickListener {
-                            applier.applyCorrection(node, snapshot, lint, suggestion)
-                            removeOverlay()
+                    val btn =
+                        Button(context).apply {
+                            text = suggestion.displayText
+                            setOnClickListener {
+                                applier.applyCorrection(node, snapshot, lint, suggestion)
+                                removeOverlay()
+                            }
                         }
-                    }
                     containerSuggestions.addView(btn)
                 }
             }
