@@ -41,7 +41,10 @@ class EditableNodeTracker(
         val packageName = node.packageName?.toString() ?: ""
         val supportLevel = appPolicy.getSupportLevel(packageName)
 
-        if (supportLevel == AppPolicy.SupportLevel.DENIED || supportLevel == AppPolicy.SupportLevel.LIMITED || ProtectedFieldDetector.isSensitive(node)) {
+        if (supportLevel == AppPolicy.SupportLevel.DENIED ||
+            supportLevel == AppPolicy.SupportLevel.LIMITED ||
+            ProtectedFieldDetector.isSensitive(node)
+        ) {
             currentNode = null
             scope.launch {
                 grammarRepository.submitSnapshot(

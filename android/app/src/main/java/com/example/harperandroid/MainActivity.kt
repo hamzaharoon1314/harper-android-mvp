@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Suppress("FunctionName")
 @Composable
 fun FixtureScreen() {
     Column(

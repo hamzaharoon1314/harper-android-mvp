@@ -1,4 +1,4 @@
-﻿package com.example.harperandroid
+package com.example.harperandroid
 
 class AppPolicy {
     enum class SupportLevel {
@@ -11,14 +11,18 @@ class AppPolicy {
 
     private val defaultBlocklist =
         setOf(
-            "com.android.chrome", // Browsers / WebViews
+            // Browsers / WebViews
+            "com.android.chrome",
             "org.mozilla.firefox",
-            "com.google.android.inputmethod.latin", // IMEs
+            // IMEs
+            "com.google.android.inputmethod.latin",
             "com.touchtype.swiftkey",
-            "com.google.android.apps.docs", // Complex Editors
+            // Complex Editors
+            "com.google.android.apps.docs",
             "com.microsoft.office.word",
             "notion.id",
-            "com.termux", // Terminals
+            // Terminals
+            "com.termux",
         )
 
     fun getSupportLevel(packageName: String): SupportLevel {

@@ -2,7 +2,16 @@ package com.example.harperandroid
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.launch
 import uniffi.harper_android.HarperEngine
 import uniffi.harper_android.HarperLint
@@ -82,7 +91,7 @@ class GrammarRepository(
                 if (isGenerationStale || isConfigStale) {
                     android.util.Log.d(
                         "HarperPerformance",
-                        "Stale result rejected for reqId=\$reqId gen=\$\{snapshot.generation\} (cur=\$currentGen) cv=\$configVersion",
+                        "Stale result rejected for reqId=$reqId gen=${snapshot.generation} (cur=$currentGen) cv=$configVersion",
                     )
                     return@mapLatest null
                 }
